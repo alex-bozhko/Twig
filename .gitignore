@@ -1,0 +1,97 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+ARM/
+ARM64/
+[Bb]uild/
+[Bb]uilds/
+publish/
+[Pp]ublish/
+
+# .NET / C#
+*.dll
+*.exe
+*.pdb
+*.cache
+*.suo
+*.user
+*.userprefs
+*.userosscache
+*.sln.docstates
+*.pidb
+*.svclog
+*.scc
+project.lock.json
+project.fragment.lock.json
+artifacts/
+.vs/
+*.VisualState.xml
+TestResult.xml
+[Dd]ebugPublic/
+[Rr]eleases/
+*.tlog
+*.vspscc
+*.vssscc
+.builds
+
+# NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+# WinUI / MSIX / AppX packaging
+AppPackages/
+BundleArtifacts/
+Package.StoreAssociation.xml
+_pkginfo.txt
+*.appx
+*.appxbundle
+*.appxupload
+*.msix
+*.msixbundle
+*.msixupload
+*.cer
+*.pfx
+GeneratedArtifacts/
+ModelManifest.xml
+
+# Generated XAML / WinRT
+*.g.cs
+*.g.i.cs
+*.g.resources
+*.baml
+*.xaml.g.cs
+*.xbf
+Generated Files/
+
+# Rider / ReSharper / VSCode
+.idea/
+*.sln.iml
+_ReSharper*/
+*.DotSettings.user
+.vscode/
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+
+# Misc
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
