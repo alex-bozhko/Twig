@@ -95,3 +95,6 @@ $RECYCLE.BIN/
 *.bak
 *.swp
 *~
+
+# GitHub config (local only)
+.github/
