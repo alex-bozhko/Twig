@@ -96,5 +96,5 @@ $RECYCLE.BIN/
 *.swp
 *~
 
-# GitHub config (local only)
-.github/
+# GitHub config (workflows are committed, instructions are local)
+.github/instructions/

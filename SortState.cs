@@ -24,7 +24,7 @@ public sealed class SortState : INotifyPropertyChanged
 
     private static string Arrow(SortKey key) =>
         FileSystemItem.CurrentSortKey == key
-            ? (FileSystemItem.SortDescending ? " ▼" : " ▲")
+            ? (FileSystemItem.SortDescending ? " ˅" : " ˄")
             : string.Empty;
 
     public void Refresh()
