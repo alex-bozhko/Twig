@@ -215,7 +215,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // Favorites (load BEFORE setting ActiveTab — the ActiveTab setter fires
         // OnActiveTabChanged -> SaveSettings, which would otherwise write an
         // empty Favorites list over the loaded settings).
-        if (settings?.Favorites != null)
+        if (settings?.FavoriteEntries != null && settings.FavoriteEntries.Count > 0)
+        {
+            foreach (var fe in settings.FavoriteEntries)
+            {
+                if (!string.IsNullOrWhiteSpace(fe.Path))
+                    Favorites.Add(new Favorite
+                    {
+                        Path = fe.Path,
+                        SortKey = !string.IsNullOrEmpty(fe.SortKey) && Enum.TryParse<SortKey>(fe.SortKey, true, out var fsk) ? fsk : SortKey.Name,
+                        SortDescending = fe.SortDescending,
+                    });
+            }
+        }
+        else if (settings?.Favorites != null)
         {
             foreach (var fp in settings.Favorites)
             {
@@ -274,6 +287,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         public List<TabEntry>? TabEntries { get; set; }
         public int? ActiveTabIndex { get; set; }
         public List<string>? Favorites { get; set; }
+        public List<FavoriteEntry>? FavoriteEntries { get; set; }
         public double? SidebarWidth { get; set; }
         public double? NameWidth { get; set; }
         public double? ModifiedWidth { get; set; }
@@ -282,6 +296,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         public string? SortKey { get; set; }
         public bool? SortDescending { get; set; }
         public PaneEntry? Root { get; set; }
+    }
+
+    private sealed class FavoriteEntry
+    {
+        public string Path { get; set; } = string.Empty;
+        public string? SortKey { get; set; }
+        public bool SortDescending { get; set; }
     }
 
     private sealed class PaneEntry
@@ -367,6 +388,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 SortKey = FileSystemItem.CurrentSortKey.ToString(),
                 SortDescending = FileSystemItem.SortDescending,
                 Favorites = Favorites.Select(f => f.Path).Where(p => !string.IsNullOrEmpty(p)).ToList(),
+                FavoriteEntries = Favorites.Where(f => !string.IsNullOrEmpty(f.Path)).Select(f => new FavoriteEntry
+                {
+                    Path = f.Path,
+                    SortKey = f.SortKey.ToString(),
+                    SortDescending = f.SortDescending,
+                }).ToList(),
                 Root = SerializePane(_savedRoot ?? Root),
             };
             var dir = Path.GetDirectoryName(SettingsPath);
@@ -2991,10 +3018,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AddFavorite_Click(object sender, RoutedEventArgs e)
     {
-        var p = ActiveTab?.Path;
+        var tab = ActiveTab;
+        if (tab == null) return;
+        var p = tab.Path;
         if (string.IsNullOrEmpty(p) || !Directory.Exists(p)) return;
-        if (Favorites.Any(f => string.Equals(f.Path, p, StringComparison.OrdinalIgnoreCase))) return;
-        Favorites.Add(new Favorite { Path = p });
+
+        // If the folder is already a favorite, update its sort state.
+        var existing = Favorites.FirstOrDefault(f => string.Equals(f.Path, p, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            existing.SortKey = tab.SortKey;
+            existing.SortDescending = tab.SortDescending;
+            SaveSettings();
+            StatusText.Text = $"Updated sort for favorite: {existing.Name}";
+            return;
+        }
+
+        Favorites.Add(new Favorite
+        {
+            Path = p,
+            SortKey = tab.SortKey,
+            SortDescending = tab.SortDescending,
+        });
     }
 
     private void RemoveFavorite_Click(object sender, RoutedEventArgs e)
@@ -3041,13 +3086,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         FavoritesPopup.IsOpen = false;
         if (newTab)
         {
-            var tab = new BrowserTab { Path = f.Path };
+            var tab = new BrowserTab
+            {
+                Path = f.Path,
+                SortKey = f.SortKey,
+                SortDescending = f.SortDescending,
+            };
             Tabs.Add(tab);
             ActiveTab = tab;
             _ = NavigateTabAsync(tab, f.Path, expandToPath: true, rootAtTarget: asRoot);
         }
         else if (ActiveTab != null)
         {
+            ActiveTab.SortKey = f.SortKey;
+            ActiveTab.SortDescending = f.SortDescending;
+            FileSystemItem.CurrentSortKey = f.SortKey;
+            FileSystemItem.SortDescending = f.SortDescending;
+            SortState.Instance.Refresh();
             _ = NavigateTabAsync(ActiveTab, f.Path, expandToPath: true, rootAtTarget: asRoot);
         }
     }

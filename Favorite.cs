@@ -21,6 +21,10 @@ public sealed class Favorite : INotifyPropertyChanged
         }
     }
 
+    // Sort state captured when the favorite was added / last updated.
+    public SortKey SortKey { get; set; } = SortKey.Name;
+    public bool SortDescending { get; set; }
+
     public string Name
     {
         get
