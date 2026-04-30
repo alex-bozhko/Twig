@@ -21,6 +21,10 @@ public sealed class BrowserTab : INotifyPropertyChanged
     public string SelectedPath { get; set; } = string.Empty;
     public double ScrollOffset { get; set; }
 
+    // Per-tab sort state.
+    public SortKey SortKey { get; set; } = SortKey.Name;
+    public bool SortDescending { get; set; }
+
     private string _path = string.Empty;
     public string Path
     {

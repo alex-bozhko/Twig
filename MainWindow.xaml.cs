@@ -207,6 +207,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ExpandedPaths = e.ExpandedPaths ?? new List<string>(),
                 SelectedPath = e.SelectedPath ?? string.Empty,
                 ScrollOffset = e.ScrollOffset,
+                SortKey = !string.IsNullOrEmpty(e.SortKey) && Enum.TryParse<SortKey>(e.SortKey, true, out var sk2) ? sk2 : SortKey.Name,
+                SortDescending = e.SortDescending ?? false,
             });
         }
 
@@ -304,6 +306,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         public List<string>? ExpandedPaths { get; set; }
         public string? SelectedPath { get; set; }
         public double ScrollOffset { get; set; }
+        public string? SortKey { get; set; }
+        public bool? SortDescending { get; set; }
     }
 
     private static Settings? LoadSettings()
@@ -345,6 +349,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     ExpandedPaths = t.ExpandedPaths,
                     SelectedPath = t.SelectedPath,
                     ScrollOffset = t.ScrollOffset,
+                    SortKey = t.SortKey.ToString(),
+                    SortDescending = t.SortDescending,
                 })
                 .Where(e => e.IsDrives || !string.IsNullOrEmpty(e.Path)).ToList();
             var activeIdx = ActiveTab != null ? Math.Max(0, AllTabs().ToList().IndexOf(ActiveTab)) : 0;
@@ -389,6 +395,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     ExpandedPaths = t.ExpandedPaths,
                     SelectedPath = t.SelectedPath,
                     ScrollOffset = t.ScrollOffset,
+                    SortKey = t.SortKey.ToString(),
+                    SortDescending = t.SortDescending,
                 }).ToList(),
             };
         }
@@ -443,6 +451,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ExpandedPaths = t.ExpandedPaths ?? new List<string>(),
                 SelectedPath = t.SelectedPath ?? string.Empty,
                 ScrollOffset = t.ScrollOffset,
+                SortKey = !string.IsNullOrEmpty(t.SortKey) && Enum.TryParse<SortKey>(t.SortKey, true, out var sk) ? sk : SortKey.Name,
+                SortDescending = t.SortDescending ?? false,
             });
         }
         if (leaf.Tabs.Count == 0) return null;
@@ -619,6 +629,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async System.Threading.Tasks.Task NavigateTabAsync(BrowserTab tab, string targetPath, bool expandToPath, bool rootAtTarget = false)
     {
+        // Ensure LoadChildren (which uses the global sort statics) applies this
+        // tab's sort order for any children loaded during navigation.
+        FileSystemItem.CurrentSortKey = tab.SortKey;
+        FileSystemItem.SortDescending = tab.SortDescending;
+
         // Special mode: drives tab (no path). Populate all ready drives as roots.
         if (string.IsNullOrEmpty(targetPath))
         {
@@ -763,6 +778,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async void OnActiveTabChanged()
     {
         UpdateToolbarFromActiveTab();
+        // Sync the global sort statics and column header arrows to this tab's sort.
+        if (ActiveTab != null)
+        {
+            FileSystemItem.CurrentSortKey = ActiveTab.SortKey;
+            FileSystemItem.SortDescending = ActiveTab.SortDescending;
+            SortState.Instance.Refresh();
+        }
         SaveSettings();
         // Restore scroll position of the newly active tab (its TreeView is realized now).
         var tab = ActiveTab;
@@ -2406,12 +2428,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ApplySort(SortKey key)
     {
-        if (FileSystemItem.CurrentSortKey == key) FileSystemItem.SortDescending = !FileSystemItem.SortDescending;
-        else { FileSystemItem.CurrentSortKey = key; FileSystemItem.SortDescending = false; }
+        var tab = ActiveTab;
+        if (tab == null) return;
 
-        foreach (var tab in Tabs)
-            foreach (var root in tab.Roots)
-                root.ResortRecursively();
+        if (tab.SortKey == key) tab.SortDescending = !tab.SortDescending;
+        else { tab.SortKey = key; tab.SortDescending = false; }
+
+        // Also update the global statics so LoadChildren (which runs during
+        // expand) uses the current tab's sort order.
+        FileSystemItem.CurrentSortKey = tab.SortKey;
+        FileSystemItem.SortDescending = tab.SortDescending;
+
+        foreach (var root in tab.Roots)
+            root.ResortRecursively(tab.SortKey, tab.SortDescending);
 
         SortState.Instance.Refresh();
         SaveSettings();

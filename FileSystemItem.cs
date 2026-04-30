@@ -356,21 +356,24 @@ public sealed class FileSystemItem : INotifyPropertyChanged
         HasUnrealizedChildren = false;
     }
 
-    public void ResortRecursively()
+    public void ResortRecursively(SortKey sortKey, bool descending)
     {
         if (!_childrenLoaded) return;
-        var sorted = Sort(_children.ToList()).ToList();
+        var sorted = Sort(_children.ToList(), sortKey, descending).ToList();
         _children.Clear();
         foreach (var c in sorted)
         {
             _children.Add(c);
-            c.ResortRecursively();
+            c.ResortRecursively(sortKey, descending);
         }
     }
 
-    private static IEnumerable<FileSystemItem> Sort(IEnumerable<FileSystemItem> items)
+    // Overload for backward compatibility (uses global statics).
+    public void ResortRecursively() => ResortRecursively(CurrentSortKey, SortDescending);
+
+    private static IEnumerable<FileSystemItem> Sort(IEnumerable<FileSystemItem> items, SortKey sortKey, bool descending)
     {
-        Comparison<FileSystemItem> cmp = CurrentSortKey switch
+        Comparison<FileSystemItem> cmp = sortKey switch
         {
             SortKey.Modified => (a, b) => Nullable.Compare(a.LastWriteTime, b.LastWriteTime),
             SortKey.Type => (a, b) => string.Compare(a.TypeDescription, b.TypeDescription, StringComparison.OrdinalIgnoreCase),
@@ -380,9 +383,12 @@ public sealed class FileSystemItem : INotifyPropertyChanged
 
         var list = items.ToList();
         list.Sort(cmp);
-        if (SortDescending) list.Reverse();
+        if (descending) list.Reverse();
         return list;
     }
+
+    private static IEnumerable<FileSystemItem> Sort(IEnumerable<FileSystemItem> items)
+        => Sort(items, CurrentSortKey, SortDescending);
 
     private string ComputeType()
     {
