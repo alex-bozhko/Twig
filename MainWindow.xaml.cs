@@ -2288,23 +2288,46 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                      char.ToLowerInvariant(before[0]) == char.ToLowerInvariant(text[0]);
         string prefix = cycle ? text : _searchBuffer;
 
-        var visible = EnumerateVisibleItems(ActiveTab.Roots).ToList();
-        if (visible.Count == 0) return;
+        // Scope search to the children of the currently selected folder (or
+        // the parent folder of the currently selected file). This matches the
+        // user expectation: if FolderC is selected and expanded, typing
+        // searches only within FolderC's children.
         var current = tv.SelectedItem as FileSystemItem;
+        IList<FileSystemItem> searchScope;
+        if (current != null && current.IsDirectory && current.IsExpanded && current.ChildrenLoaded)
+        {
+            // Selected item is an expanded folder — search its children.
+            searchScope = current.Children;
+        }
+        else if (current != null)
+        {
+            // Selected item is a file (or collapsed folder). Find its parent
+            // and search among its siblings.
+            var parent = FindParentItem(ActiveTab.Roots, current);
+            searchScope = parent != null && parent.ChildrenLoaded
+                ? parent.Children
+                : ActiveTab.Roots;
+        }
+        else
+        {
+            searchScope = ActiveTab.Roots;
+        }
+
+        if (searchScope.Count == 0) return;
         int startIdx = 0;
         if (cycle && current != null)
         {
-            var ci = visible.IndexOf(current);
+            var ci = IndexOfItem(searchScope, current);
             if (ci >= 0) startIdx = ci + 1;
         }
 
         FileSystemItem? match = null;
-        for (int offset = 0; offset < visible.Count; offset++)
+        for (int offset = 0; offset < searchScope.Count; offset++)
         {
-            var idx = (startIdx + offset) % visible.Count;
-            if (visible[idx].Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            var idx = (startIdx + offset) % searchScope.Count;
+            if (searchScope[idx].Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             {
-                match = visible[idx];
+                match = searchScope[idx];
                 break;
             }
         }
@@ -2320,6 +2343,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText.Text = $"Find: {prefix} (no match)";
         }
         e.Handled = true;
+    }
+
+    private static int IndexOfItem(IList<FileSystemItem> list, FileSystemItem item)
+    {
+        for (int i = 0; i < list.Count; i++)
+            if (ReferenceEquals(list[i], item)) return i;
+        return -1;
+    }
+
+    // Walk the tree to find the parent of a given item.
+    private static FileSystemItem? FindParentItem(IEnumerable<FileSystemItem> roots, FileSystemItem target)
+    {
+        foreach (var root in roots)
+        {
+            var result = FindParentItemRecursive(root, target);
+            if (result != null) return result;
+        }
+        return null;
+    }
+
+    private static FileSystemItem? FindParentItemRecursive(FileSystemItem node, FileSystemItem target)
+    {
+        if (!node.ChildrenLoaded) return null;
+        foreach (var child in node.Children)
+        {
+            if (ReferenceEquals(child, target)) return node;
+            var r = FindParentItemRecursive(child, target);
+            if (r != null) return r;
+        }
+        return null;
     }
 
     private static bool AllSame(string s)
