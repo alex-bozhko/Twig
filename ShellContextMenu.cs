@@ -73,6 +73,8 @@ internal static class ShellContextMenu
             const uint idCopyFullPath = 0x7FFD;
             const uint idNewFolder = 0x7FF0;
             const uint idNewFile = 0x7FF1;
+            const uint idExpandAll = 0x7FFC;
+            const uint idCollapseAll = 0x7FFB;
             if (ctxMenu.QueryContextMenu(hMenu, 0, idCmdFirst, idCmdLast, flags) < 0)
             {
                 return null;
@@ -86,6 +88,18 @@ internal static class ShellContextMenu
             InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_SEPARATOR, UIntPtr.Zero, null);
             InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, (UIntPtr)idCopyFullPath, "Copy full path");
             InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, (UIntPtr)idOpenInExplorer, "Open File Explorer here");
+
+            // "Expand all" / "Collapse all" for directories, below "Copy full path".
+            // After the inserts above: 0=Explorer, 1=Copy path, 2=separator, 3+=shell items.
+            // We insert between Copy path (1) and separator (2).
+            if (isDirectory)
+            {
+                // After original inserts: 0=Explorer, 1=CopyPath, 2=separator.
+                // Insert after separator (pos 3+), then add another separator after.
+                InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING, (UIntPtr)idExpandAll, "Expand all");
+                InsertMenuW(hMenu, 4, MF_BYPOSITION | MF_STRING, (UIntPtr)idCollapseAll, "Collapse all");
+                InsertMenuW(hMenu, 5, MF_BYPOSITION | MF_SEPARATOR, UIntPtr.Zero, null);
+            }
 
             // Prepend "New ▸" submenu for directories.
             if (isDirectory)
@@ -130,6 +144,9 @@ internal static class ShellContextMenu
                 try { System.Windows.Clipboard.SetText(path); } catch { }
                 return null;
             }
+
+            if (cmd == idExpandAll) return "__expand_all__";
+            if (cmd == idCollapseAll) return "__collapse_all__";
 
             if (cmd == idNewFolder)
             {

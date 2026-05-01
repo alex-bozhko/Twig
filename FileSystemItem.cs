@@ -33,7 +33,7 @@ public sealed class FileSystemItem : INotifyPropertyChanged
         // Files with a .zip extension are expandable in the tree.
         if (!isDirectory && IsZipPath(path))
             IsZip = true;
-        HasUnrealizedChildren = isDirectory || IsZip;
+        HasUnrealizedChildren = (isDirectory && HasAnyChildren(path)) || IsZip;
 
         if (HasUnrealizedChildren)
         {
@@ -87,10 +87,20 @@ public sealed class FileSystemItem : INotifyPropertyChanged
     public bool IsZipEntry { get; }
     public string? ZipArchivePath { get; }
     public string? ZipEntryPath { get; }
-    public bool IsExpandable => IsDirectory || IsZip;
+    public bool IsExpandable => HasUnrealizedChildren || (ChildrenLoaded && _children.Count > 0) || IsZip;
     private static bool IsZipPath(string path) =>
         !string.IsNullOrEmpty(path) &&
         string.Equals(System.IO.Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase);
+
+    // Quick check whether a directory has at least one child entry.
+    private static bool HasAnyChildren(string path)
+    {
+        try
+        {
+            return Directory.EnumerateFileSystemEntries(path).Any();
+        }
+        catch { return true; } // If we can't check, assume non-empty.
+    }
 
     private bool IsPlaceholder => string.Equals(Path, "__placeholder__", StringComparison.Ordinal);
 
@@ -125,6 +135,7 @@ public sealed class FileSystemItem : INotifyPropertyChanged
         {
             _children = value;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(IsExpandable));
         }
     }
 
@@ -136,6 +147,7 @@ public sealed class FileSystemItem : INotifyPropertyChanged
             if (_hasUnrealizedChildren == value) return;
             _hasUnrealizedChildren = value;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(IsExpandable));
         }
     }
 

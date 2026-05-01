@@ -1044,6 +1044,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (!string.IsNullOrEmpty(created))
         {
+            if (created == "__expand_all__")
+            {
+                ExpandAllRecursively(item);
+                return;
+            }
+            if (created == "__collapse_all__")
+            {
+                CollapseAllRecursively(item);
+                return;
+            }
             PushUndo(new UndoEntry
             {
                 Kind = UndoKind.Create,
@@ -1074,6 +1084,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             d = System.Windows.Media.VisualTreeHelper.GetParent(d);
         }
         return null;
+    }
+
+    private static void ExpandAllRecursively(FileSystemItem item)
+    {
+        if (!item.IsDirectory) return;
+        if (!item.ChildrenLoaded) item.LoadChildren();
+        item.IsExpanded = true;
+        foreach (var c in item.Children)
+            ExpandAllRecursively(c);
+    }
+
+    private static void CollapseAllRecursively(FileSystemItem item)
+    {
+        if (!item.IsDirectory) return;
+        item.IsExpanded = false;
+        if (!item.ChildrenLoaded) return;
+        foreach (var c in item.Children)
+            CollapseAllRecursively(c);
     }
 
     // ---------- Tab drag-hover switch ----------
@@ -1622,7 +1650,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
             ToggleMultiSelection(tab, item);
             tab.SelectionAnchor = item;
+            // Suppress WPF's built-in TreeViewItem selection which fires on the
+            // bubbling MouseLeftButtonDown and would re-select the item we just
+            // toggled off. We need to mark the event Handled AND manually clear
+            // the TreeViewItem.IsSelected so the TwoWay binding doesn't override
+            // our IsMultiSelected state.
             e.Handled = true;
+            if (!item.IsMultiSelected)
+            {
+                tvi!.IsSelected = false;
+                item.IsSelected = false;
+            }
             tvi!.Focus();
         }
         else
