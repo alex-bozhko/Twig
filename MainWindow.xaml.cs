@@ -130,6 +130,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
     public IEnumerable<BrowserTab> AllTabs() => AllLeaves().SelectMany(p => p.Tabs);
 
+    // --- Recently closed tabs (for Ctrl+Shift+T reopen) ---
+    // Snapshot of a closed tab's persistent state plus where it lived, so it can
+    // be recreated. The newest closed tab is at the end of the list (LIFO).
+    private sealed class ClosedTabInfo
+    {
+        public LeafPane? Pane;
+        public int Index;
+        public string Path = string.Empty;
+        public bool AsRoot;
+        public bool IsDrives;
+        public string RootPath = string.Empty;
+        public List<string> ExpandedPaths = new();
+        public string SelectedPath = string.Empty;
+        public double ScrollOffset;
+        public SortKey SortKey = SortKey.Name;
+        public bool SortDescending;
+    }
+
+    private readonly List<ClosedTabInfo> _closedTabs = new();
+    private const int MaxClosedTabs = 25;
+
     private bool _restoring;
     private bool _bulkLoading;
     private bool _syncingToolbar;
@@ -877,6 +898,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (AllTabs().Count() <= 1) return;
         var idx = pane.Tabs.IndexOf(tab);
         if (idx < 0) return;
+        RememberClosedTab(tab, pane, idx);
         var wasActive = ReferenceEquals(tab, pane.ActiveTab);
         pane.Tabs.Remove(tab);
         if (pane.Tabs.Count == 0)
@@ -893,6 +915,81 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private static BrowserTab? TabFromSender(object sender) =>
         (sender as FrameworkElement)?.Tag as BrowserTab;
+
+    // Snapshot a tab's persistent state so it can be reopened later (Ctrl+Shift+T).
+    private void RememberClosedTab(BrowserTab tab, LeafPane pane, int index)
+    {
+        // Persist live tree state (expanded folders, selection) onto the tab first.
+        CaptureTabState(tab);
+        _closedTabs.Add(new ClosedTabInfo
+        {
+            Pane = pane,
+            Index = index,
+            Path = tab.Path,
+            AsRoot = tab.AsRoot,
+            IsDrives = tab.IsDrives,
+            RootPath = tab.RootPath,
+            ExpandedPaths = new List<string>(tab.ExpandedPaths),
+            SelectedPath = tab.SelectedPath,
+            ScrollOffset = tab.ScrollOffset,
+            SortKey = tab.SortKey,
+            SortDescending = tab.SortDescending,
+        });
+        while (_closedTabs.Count > MaxClosedTabs) _closedTabs.RemoveAt(0);
+    }
+
+    // Reopen the most recently closed tab, restoring it to its original pane when
+    // that pane still exists, otherwise to the active pane.
+    private void ReopenClosedTab()
+    {
+        if (_closedTabs.Count == 0) return;
+        var info = _closedTabs[^1];
+        _closedTabs.RemoveAt(_closedTabs.Count - 1);
+
+        if (_maximizedTab != null) RestoreMaximizedTab();
+
+        var leaves = AllLeaves().ToList();
+        var pane = info.Pane != null && leaves.Contains(info.Pane) ? info.Pane : ActivePane;
+        if (pane == null) return;
+
+        var tab = new BrowserTab
+        {
+            Path = info.Path,
+            AsRoot = info.AsRoot,
+            IsDrives = info.IsDrives,
+            RootPath = info.RootPath,
+            ExpandedPaths = new List<string>(info.ExpandedPaths),
+            SelectedPath = info.SelectedPath,
+            ScrollOffset = info.ScrollOffset,
+            SortKey = info.SortKey,
+            SortDescending = info.SortDescending,
+        };
+
+        var index = Math.Clamp(info.Index, 0, pane.Tabs.Count);
+        pane.Tabs.Insert(index, tab);
+        ActivePane = pane;
+        pane.ActiveTab = tab;
+        Raise(nameof(ActiveTab));
+        OnActiveTabChanged();
+
+        _ = ReopenNavigateAsync(tab);
+        SaveSettings();
+    }
+
+    private async System.Threading.Tasks.Task ReopenNavigateAsync(BrowserTab tab)
+    {
+        string navPath;
+        if (tab.IsDrives)
+            navPath = string.Empty;
+        else if (tab.AsRoot && !string.IsNullOrEmpty(tab.RootPath))
+            navPath = tab.RootPath;
+        else
+            navPath = tab.Path;
+        await NavigateTabAsync(tab, navPath, expandToPath: true, rootAtTarget: tab.AsRoot);
+        await RestoreTabStateAsync(tab);
+    }
+
+    private void TabMenuReopen_Click(object sender, RoutedEventArgs e) => ReopenClosedTab();
 
     private void TabMenuClose_Click(object sender, RoutedEventArgs e)
     {
@@ -2760,10 +2857,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Handled) return;
+        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+        // Reopen the most recently closed tab. Works regardless of focus.
+        if (ctrl && shift && e.Key == Key.T)
+        {
+            ReopenClosedTab();
+            e.Handled = true;
+            return;
+        }
         // Ignore when focus is in a text input (rename/path box) so we don't
         // hijack the browser undo there.
         if (Keyboard.FocusedElement is TextBox) return;
-        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
         if (ctrl && e.Key == Key.Z)
         {
             _ = DoUndoAsync();
