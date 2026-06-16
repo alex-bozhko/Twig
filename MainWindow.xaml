@@ -440,6 +440,8 @@
                                                 <MenuItem Header="Close all to the left" Click="TabMenuCloseLeft_Click" Tag="{Binding}" />
                                                 <MenuItem Header="Close all to the right" Click="TabMenuCloseRight_Click" Tag="{Binding}" />
                                                 <Separator />
+                                                <MenuItem Header="Reopen closed tab" InputGestureText="Ctrl+Shift+T" Click="TabMenuReopen_Click" Tag="{Binding}" />
+                                                <Separator />
                                                 <MenuItem Header="Split Right" Click="TabMenuSplitRight_Click" Tag="{Binding}" />
                                                 <MenuItem Header="Split Down" Click="TabMenuSplitDown_Click" Tag="{Binding}" />
                                             </ContextMenu>
