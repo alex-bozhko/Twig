@@ -13,40 +13,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '9.0.x'
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish self-contained exe
-        run: >
-          dotnet publish -c Release -r win-x64
-          --self-contained true
-          /p:PublishSingleFile=true
-          /p:IncludeNativeLibrariesForSelfExtract=true
-          -o publish
+      - name: Test
+        run: cargo test --locked
 
-      - name: Rename self-contained exe
-        run: mv publish/FileBrowser.exe publish/Twig-standalone.exe
+      - name: Build
+        run: cargo build --release --locked
 
-      - name: Publish framework-dependent exe
-        run: >
-          dotnet publish -c Release -r win-x64
-          --self-contained false
-          /p:PublishSingleFile=true
-          -o publish-small
-
-      - name: Rename framework-dependent exe
-        run: mv publish-small/FileBrowser.exe publish-small/Twig.exe
-
-      - name: Upload standalone artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Twig-standalone
-          path: publish/Twig-standalone.exe
-
-      - name: Upload framework-dependent artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Twig
-          path: publish-small/Twig.exe
+          path: target/release/Twig.exe

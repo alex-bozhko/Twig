@@ -1,89 +1,78 @@
-# Branch
+# Twig
 
-A Finder-style, tree-first file browser for Windows, built on WPF / .NET 9.
+A fast, tree-first file browser for Windows, written in Rust on raw Win32
+(via [`windows-rs`](https://github.com/microsoft/windows-rs)). Single ~1 MB
+executable, no runtime dependencies.
 
-Branch shows your file system as a real collapsible tree (not a flat list), with
-multiple tabs, split panes, and Explorer-grade file operations.
+Twig shows your file system as a real collapsible tree with columns (Name /
+Date modified / Type / Size), multiple tabs, split panes and Explorer-grade
+file operations.
 
 ## Features
 
-### Tree view
+### Tree
 
-- Full-file-system tree with per-folder expand / collapse chevrons.
-- Double-click a folder to re-root the tree on it; double-click the root again
-  to jump back up.
-- Type-to-search within a folder jumps to the next matching child.
+- Virtualized, custom-drawn tree grid with per-folder expand chevrons; folders
+  load in the background and update live as files change on disk.
+- Double-click a folder to re-root the tab on it; double-click the root to go
+  up (a drive root goes back to **This PC**). `Backspace` goes up.
+- Folder context menu adds **Expand all** / **Collapse all**.
+- Click a column header to sort, drag header edges to resize.
+- Type-to-search jumps to the next matching item in the current folder.
+- Keyboard: arrows, `Home`/`End`, `PgUp`/`PgDn`, `←`/`→` collapse/expand,
+  `Ctrl+A`, `Ctrl+Space`, `F5` refresh.
 
-### Tabs
+### Tabs and panes
 
-- Multiple tabs per pane
-- Double-click a tab header to temporarily **maximize** it fullscreen; double-
-  click again (or start dragging it) to restore the previous layout. Drag-and-
-  drop of a maximized tab auto-restores the layout for the duration of the drag
-  and re-maximizes after drop.
-- Tab context menu: **Close**, **Close Others**, **Close to the Right**,
-  **Duplicate**, **Split Right**, **Split Down**.
-
-### Split panes
-
-- **Split Right** / **Split Down** adds a new pane next to the current one
-  with a fresh "This PC" tab. 
+- `Ctrl+T` new tab, `Ctrl+W` close, `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle,
+  `Ctrl+L` focus the path box.
+- Drag a tab onto another pane's strip to move it, or onto a pane edge to
+  dock it into a new split.
+- Double-click a tab (or the empty tab strip) to maximize that pane; again
+  to restore.
+- Tab context menu: Close, Close Others, Close to the Left / Right,
+  Split Right, Split Down, Maximize / Restore pane.
 
 ### File operations
 
-- **Drag and drop** with Windows semantics (hold `Ctrl` to copy). 
-- **Ctrl+C** — copy selected paths to the clipboard.
-- **Ctrl+V** — paste clipboard file list into the selected folder.
-- **Ctrl+Delete** — move selected items to the Recycle Bin.
-- **F2 / Enter** — rename (single-selection only).
-- **Ctrl+Z** — undo move / copy / paste / delete / rename. Multi-item
-  operations are undone as a single action.
-- Full **Windows Shell context menu** on right-click, including extended
-  verbs when holding `Shift`. Creating a new item via the menu refreshes the
-  parent folder and starts a rename on the new item.
-- `Refresh` button re-reads the loaded subtree without re-rooting.
-
-### Multi-selection
-
-- **Ctrl+click** toggles an item in the selection.
-- **Shift+click** selects the range between the anchor and the clicked item
-  (following the visible tree order).
+- Drag and drop with Windows semantics (`Ctrl` copy, `Shift` move).
+- `Ctrl+C` / `Ctrl+X` / `Ctrl+V` clipboard (interoperates with Explorer).
+- `Delete` recycles, `Shift+Delete` deletes permanently.
+- `F2` / `Enter` rename, `Alt+Enter` properties.
+- `Ctrl+Z` undo of copy / move / rename / recycle / new item.
+- Full Windows Shell context menu (`Shift` for extended verbs).
+- All operations run on a background thread via `IFileOperation`; the UI never
+  blocks.
 
 ### Zip archives
 
-- Zip files show an expand chevron alongside folders. Expanding a zip reads
-  its directory virtually — the archive is **not** unpacked on disk.
-- Entries inside a zip appear as regular tree nodes (folders and files).
-- Opening a zip entry (double-click) extracts just that entry to
-  `%TEMP%\FileBrowserZip\…` and opens it with the default handler.
-- Dragging a zip entry out of Branch extracts on-demand to a temp path and
-  hands the extracted file to the drop target.
+- Zip files expand like folders without unpacking on disk.
+- Opening, copying or dragging out an entry extracts just that entry to a
+  unique folder under `%TEMP%\Twig\` (cleaned up on start).
 
 ### Favorites
 
-- ★ button in the toolbar opens a **popup** Favorites panel (context-menu
-  style, auto-dismisses on click outside or when a favorite is chosen).
-- Add the current folder to Favorites; remove via context menu.
-- Open a favorite in the current tab or as a new tab.
+- ★ menu: add the current folder, open in current or new tab, right-click to
+  remove.
 
 ### Persistence
 
-- On exit, Branch saves: window size, column widths, sort state, favorites,
-  full pane tree (orientation + sizes), per-tab roots, per-tab expanded paths,
-  per-tab selection, per-tab scroll offset, and which tab is active in each
-  pane. All of this is restored on the next launch.
+- Window placement, pane layout, tabs (root, expanded folders, selection,
+  scroll, sort), column widths and favorites are saved to
+  `%LOCALAPPDATA%\Twig\settings.json`.
+- On first run, settings from the previous .NET version
+  (`%LOCALAPPDATA%\FileBrowser\settings.json`) are imported, including the
+  full tab/pane layout.
+
+### Appearance
+
+- Per-monitor DPI aware; follows the system light/dark theme.
 
 ## Build
 
+Requires the Rust MSVC toolchain (`rustup default stable-msvc`).
+
 ```powershell
-# Debug
-dotnet build
-
-# Release
-dotnet build -c Release
-
-# Self-contained single-file executable
-dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
+cargo build --release   # target\release\Twig.exe
+cargo test
 ```
-
-Requires .NET 9 SDK. Targets `net9.0-windows`.

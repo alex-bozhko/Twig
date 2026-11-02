@@ -14,39 +14,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '9.0.x'
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish self-contained exe
-        run: >
-          dotnet publish -c Release -r win-x64
-          --self-contained true
-          /p:PublishSingleFile=true
-          /p:IncludeNativeLibrariesForSelfExtract=true
-          -o publish
+      - name: Test
+        run: cargo test --locked
 
-      - name: Rename self-contained exe
-        run: mv publish/FileBrowser.exe publish/Twig-standalone.exe
-
-      - name: Publish framework-dependent exe
-        run: >
-          dotnet publish -c Release -r win-x64
-          --self-contained false
-          /p:PublishSingleFile=true
-          -o publish-small
-
-      - name: Rename framework-dependent exe
-        run: mv publish-small/FileBrowser.exe publish-small/Twig.exe
+      - name: Build
+        run: cargo build --release --locked
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            publish/Twig-standalone.exe
-            publish-small/Twig.exe
+          files: target/release/Twig.exe
           generate_release_notes: true
           body: |
-            **Twig-standalone.exe** — Self-contained, no .NET install needed (~128MB)
-            **Twig.exe** — Requires .NET 9 Desktop Runtime installed (~2MB)
+            **Twig.exe** — single native executable, no runtime required.
