@@ -57,11 +57,19 @@ struct Rename {
     original: String,
 }
 
+/// Path being typed into a tab's breadcrumb bar.
+struct PathEdit {
+    edit: isize,
+    pane: PaneId,
+    tab: TabId,
+}
+
 /// Grid interaction state shared by all grids (only one interaction happens at a time).
 #[derive(Default)]
 pub struct GridUi {
     press: Option<Press>,
     rename: Option<Rename>,
+    path_edit: Option<PathEdit>,
     search: String,
     search_at: Option<Instant>,
     search_scope: Vec<NodeId>,
@@ -127,6 +135,8 @@ pub enum Hit {
     Row { row: usize, node: NodeId, chevron: bool },
     /// Breadcrumb segment `index`; `target` None = This PC.
     Crumb { index: usize, target: Option<String> },
+    /// Breadcrumb bar outside the clickable segments (click to type a path).
+    CrumbBar,
     /// The Up button on the pinned root row.
     Up,
     Empty,
@@ -139,7 +149,7 @@ enum BarHot {
     Up,
 }
 
-/// Vertical layout: breadcrumb bar (zoomed only), column header, pinned root row, scrolling rows.
+/// Vertical layout: breadcrumb bar (zoomed or typing a path), column header, pinned root row, scrolling rows.
 pub struct Geo {
     crumb: i32,
     header_y: i32,
@@ -152,7 +162,7 @@ pub struct Geo {
 impl Geo {
     /// Call after `t.ensure_rows()`.
     fn of(m: &Metrics, t: &Tab) -> Geo {
-        let crumb = if t.zoomed() { m.header } else { 0 };
+        let crumb = if t.zoomed() || t.editing_path { m.header } else { 0 };
         let pin = t.pinned();
         let body = crumb + m.header;
         Geo { crumb, header_y: crumb, body, pin, scroll_y: body + pin as i32 * m.row, row: m.row }
@@ -373,11 +383,19 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         }
         WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
             let p = screen_to_client(hwnd, cursor_pos());
-            let sizing = with_app(|app| {
-                app.grid_ui.col_drag.is_some() || matches!(hit(app, pane, p.x, p.y), Hit::Divider(_))
-            });
-            if sizing == Some(true) {
-                if let Ok(c) = LoadCursorW(None, IDC_SIZEWE) {
+            let cursor = with_app(|app| {
+                if app.grid_ui.col_drag.is_some() {
+                    return Some(IDC_SIZEWE);
+                }
+                match hit(app, pane, p.x, p.y) {
+                    Hit::Divider(_) => Some(IDC_SIZEWE),
+                    Hit::CrumbBar => Some(IDC_IBEAM),
+                    _ => None,
+                }
+            })
+            .flatten();
+            if let Some(id) = cursor {
+                if let Ok(c) = LoadCursorW(None, id) {
                     SetCursor(c);
                     return LRESULT(1);
                 }
@@ -485,6 +503,15 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             });
             return LRESULT(0);
         }
+        WM_PATH_END => {
+            let (go, edit) = (wp.0 == 1, lp.0);
+            with_app(|app| {
+                if app.grid_ui.path_edit.as_ref().is_some_and(|pe| pe.edit == edit) {
+                    finish_path_edit(app, go);
+                }
+            });
+            return LRESULT(0);
+        }
         WM_DESTROY => {
             let _ = RevokeDragDrop(hwnd);
         }
@@ -536,6 +563,7 @@ pub fn sync(app: &mut App, pane: PaneId) {
     }
     invalidate(hwnd);
     place_rename(app);
+    place_path_edit(app);
 }
 
 pub fn scroll_rows(app: &mut App, pane: PaneId, delta: i64) {
@@ -643,6 +671,9 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
     t.ensure_rows();
     let geo = Geo::of(&m, t);
     if y < geo.crumb {
+        if t.editing_path {
+            return Hit::Nothing;
+        }
         let hwnd = app.panes[&pane].grid();
         let w = client_rect(hwnd).right;
         let crumbs = unsafe {
@@ -656,7 +687,7 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
             .enumerate()
             .find(|(_, c)| x >= c.x && x < c.x + c.w)
             .and_then(|(index, c)| c.target.map(|target| Hit::Crumb { index, target }))
-            .unwrap_or(Hit::Nothing);
+            .unwrap_or(Hit::CrumbBar);
     }
     if y < geo.body {
         let mut edge = -t.scroll_x;
@@ -734,7 +765,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let view = app.panes[&pane].view_rows;
     let cut = app.cut.as_ref().map(|(_, set)| set);
     let bar_hover = app.grid_ui.bar_hover.filter(|h| h.0 == pane).map(|h| h.1);
-    let crumbs = if app.tabs.get(&tid).is_some_and(|t| t.zoomed()) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
+    let crumbs = if app.tabs.get(&tid).is_some_and(|t| t.zoomed() && !t.editing_path) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
     let geo = Geo::of(&m, t);
@@ -744,7 +775,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     unsafe {
         SelectObject(hdc, font);
     }
-    // Breadcrumb (zoomed into a folder).
+    // Breadcrumb (zoomed into a folder, or the path editor's backdrop).
     if geo.crumb > 0 {
         fill(hdc, &rc(0, geo.crumb - 1, w, 1), pal.border);
         let sep = scale(14, app.dpi);
@@ -1095,6 +1126,11 @@ fn on_lbutton(app: &mut App, pane: PaneId, x: i32, y: i32) -> bool {
         Hit::Crumb { target, .. } => {
             app.grid_ui.swallow_dbl = true;
             app.navigate(tid, target.as_deref(), target.is_some());
+            false
+        }
+        Hit::CrumbBar => {
+            app.grid_ui.swallow_dbl = true;
+            begin_path_edit(app, pane);
             false
         }
         Hit::Up => {
@@ -1581,6 +1617,142 @@ fn type_search_char(app: &mut App, pane: PaneId, ch: char) {
     app.set_status(status);
 }
 
+// ---------- Typing a path into the breadcrumb bar ----------
+
+/// Opens an editor over `pane`'s breadcrumb bar (shown temporarily on unzoomed tabs) with the
+/// current root selected, so a path can be typed or pasted.
+pub fn begin_path_edit(app: &mut App, pane: PaneId) {
+    let Some(tid) = active_tid(app, pane) else { return };
+    if let Some(pe) = app.grid_ui.path_edit.as_ref().filter(|pe| pe.tab == tid) {
+        let edit = isize_to_hwnd(pe.edit);
+        unsafe {
+            SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+            let _ = SetFocus(edit);
+        }
+        return;
+    }
+    close_path_edit(app);
+    let Some(grid) = app.panes.get(&pane).map(|p| p.grid()) else { return };
+    let Some(root) = app.tabs.get(&tid).map(|t| t.root.clone().unwrap_or_default()) else { return };
+    unsafe {
+        let text = wide(&root);
+        let Ok(edit) = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("EDIT"),
+            PCWSTR(text.as_ptr()),
+            WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            0,
+            0,
+            0,
+            0,
+            grid,
+            None,
+            instance(),
+            None,
+        ) else {
+            return;
+        };
+        SendMessageW(edit, WM_SETFONT, WPARAM(app.fonts.ui.0 as usize), LPARAM(1));
+        crate::theme::set_control_theme(edit, app.dark, "DarkMode_CFD");
+        let cue = wide("Type or paste a path, e.g. C:\\Users or %TEMP%");
+        SendMessageW(edit, EM_SETCUEBANNER, WPARAM(1), LPARAM(cue.as_ptr() as isize));
+        let _ = SetWindowSubclass(edit, Some(path_edit_proc), 1, 0);
+        if let Some(t) = app.tabs.get_mut(&tid) {
+            t.editing_path = true;
+        }
+        app.grid_ui.path_edit = Some(PathEdit { edit: hwnd_to_isize(edit), pane, tab: tid });
+        sync(app, pane);
+        // Select only once sized, so the start of the path stays in view.
+        SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+        let _ = SetFocus(edit);
+    }
+}
+
+/// Positions the path editor over its pane's breadcrumb bar (hidden while another tab is shown).
+fn place_path_edit(app: &mut App) {
+    let Some(pe) = &app.grid_ui.path_edit else { return };
+    let (edit, pane, tid) = (isize_to_hwnd(pe.edit), pe.pane, pe.tab);
+    let m = metrics(app);
+    let d = app.dpi;
+    let shown = active_tid(app, pane) == Some(tid);
+    let w = app.panes.get(&pane).map_or(0, |p| client_rect(p.grid()).right);
+    unsafe {
+        if shown {
+            let _ = MoveWindow(edit, m.pad / 2, scale(2, d), (w - m.pad).max(0), m.header - scale(5, d), true);
+            let _ = ShowWindow(edit, SW_SHOW);
+        } else {
+            let _ = ShowWindow(edit, SW_HIDE);
+        }
+    }
+}
+
+/// Enter (`go`) goes to the typed path, keeping the editor open if it can't be found; otherwise cancels.
+fn finish_path_edit(app: &mut App, go: bool) {
+    let Some(pe) = &app.grid_ui.path_edit else { return };
+    let (edit, tid) = (isize_to_hwnd(pe.edit), pe.tab);
+    if go && !app.go_to(tid, &get_text(edit)) {
+        balloon(edit, "Go to", "That path doesn't exist or can't be opened.");
+        return;
+    }
+    close_path_edit(app);
+}
+
+fn close_path_edit(app: &mut App) {
+    let Some(pe) = app.grid_ui.path_edit.take() else { return };
+    if let Some(t) = app.tabs.get_mut(&pe.tab) {
+        t.editing_path = false;
+    }
+    let edit = isize_to_hwnd(pe.edit);
+    let pane = app.pane_of_tab(pe.tab).unwrap_or(pe.pane);
+    unsafe {
+        if let Some(g) = app.panes.get(&pane).map(|p| p.grid()) {
+            if GetFocus() == edit {
+                let _ = SetFocus(g);
+            }
+        }
+        let _ = DestroyWindow(edit);
+    }
+    if app.panes.contains_key(&pane) {
+        sync(app, pane);
+    }
+}
+
+/// Closes the path editor without navigating.
+pub fn end_path_edit(app: &mut App) {
+    close_path_edit(app);
+}
+
+unsafe extern "system" fn path_edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, id: usize, _data: usize) -> LRESULT {
+    let notify = |go: usize| {
+        if let Ok(parent) = GetParent(hwnd) {
+            post(parent, WM_PATH_END, go, hwnd_to_isize(hwnd));
+        }
+    };
+    match msg {
+        WM_GETDLGCODE => return LRESULT(DLGC_WANTALLKEYS as isize),
+        WM_KEYDOWN if wp.0 as u16 == VK_RETURN.0 => {
+            notify(1);
+            return LRESULT(0);
+        }
+        WM_KEYDOWN if wp.0 as u16 == VK_ESCAPE.0 => {
+            notify(0);
+            return LRESULT(0);
+        }
+        WM_CHAR if wp.0 == 13 || wp.0 == 27 => return LRESULT(0),
+        // Ctrl+A
+        WM_CHAR if wp.0 == 1 => {
+            SendMessageW(hwnd, EM_SETSEL, WPARAM(0), LPARAM(-1));
+            return LRESULT(0);
+        }
+        WM_KILLFOCUS => notify(0),
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(path_edit_proc), id);
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, msg, wp, lp)
+}
+
 // ---------- In-place rename ----------
 
 pub fn begin_rename(app: &mut App, pane: PaneId, id: NodeId) {
@@ -1670,8 +1842,8 @@ fn place_rename(app: &mut App) {
     }
 }
 
-fn balloon(edit: HWND, text: &str) {
-    let (title, body) = (wide("Rename"), wide(text));
+fn balloon(edit: HWND, title: &str, text: &str) {
+    let (title, body) = (wide(title), wide(text));
     let tip = EDITBALLOONTIP {
         cbStruct: std::mem::size_of::<EDITBALLOONTIP>() as u32,
         pszTitle: PCWSTR(title.as_ptr()),
@@ -1704,7 +1876,7 @@ fn finish_rename(app: &mut App, mode: usize) {
             };
             match (error, item) {
                 (Some(e), _) if mode == 1 => {
-                    balloon(edit, &e);
+                    balloon(edit, "Rename", &e);
                     return;
                 }
                 (Some(e), _) => app.set_status_error(e),
@@ -1758,7 +1930,7 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         WM_CHAR => {
             if let Some(ch) = char::from_u32(wp.0 as u32) {
                 if INVALID_CHARS.contains(ch) {
-                    balloon(hwnd, "A file name can't contain any of the following characters:\n\\ / : * ? \" < > |");
+                    balloon(hwnd, "Rename", "A file name can't contain any of the following characters:\n\\ / : * ? \" < > |");
                     return LRESULT(0);
                 }
             }

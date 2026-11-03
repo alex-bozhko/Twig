@@ -1408,6 +1408,14 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
             }
             true
         }
+        0x4C if !sh => {
+            // Ctrl+L: type a path into the active tab's breadcrumb bar.
+            with_app(|app| {
+                let p = app.active_pane;
+                crate::grid::begin_path_edit(app, p);
+            });
+            true
+        }
         0x4E if sh => {
             // Ctrl+Shift+N: new folder next to the focused item.
             with_app(|app| {

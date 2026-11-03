@@ -17,6 +17,7 @@ pub const WM_WATCH: u32 = WM_APP + 2;
 pub const WM_FILEOP: u32 = WM_APP + 3;
 pub const WM_GRID_RELAYOUT: u32 = WM_APP + 10;
 pub const WM_RENAME_END: u32 = WM_APP + 11;
+pub const WM_PATH_END: u32 = WM_APP + 12;
 pub const WM_FOCUS_CHANGED: u32 = WM_APP + 14;
 pub const WM_REPAINT: u32 = WM_APP + 15;
 pub const WM_FILTER_CHANGED: u32 = WM_APP + 16;
@@ -56,6 +57,20 @@ pub fn hwnd_to_isize(h: HWND) -> isize {
 
 pub fn isize_to_hwnd(v: isize) -> HWND {
     HWND(v as *mut c_void)
+}
+
+/// Expands `%VARS%` (returns the input unchanged on failure).
+pub fn expand_env(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let src = wide(s);
+    let mut buf = vec![0u16; 4096];
+    let n = unsafe { windows::Win32::System::Environment::ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut buf)) };
+    if n == 0 || n as usize > buf.len() {
+        return s.to_string();
+    }
+    crate::util::from_wide(&buf)
 }
 
 pub fn x_of(l: LPARAM) -> i32 {

@@ -114,6 +114,11 @@ pub fn normalize_path(path: &str) -> String {
     p
 }
 
+/// Typed or pasted path text with surrounding whitespace and quotes removed.
+pub fn clean_path_input(text: &str) -> String {
+    text.trim().trim_matches('"').trim().to_string()
+}
+
 /// Parent directory of a path, `None` for drive roots / UNC share roots.
 pub fn parent_path(path: &str) -> Option<String> {
     let p = normalize_path(path);
@@ -357,6 +362,8 @@ mod tests {
         assert_eq!(file_name("D:\\"), "D:\\");
         assert_eq!(join_path("C:\\", "x"), "C:\\x");
         assert_eq!(join_path("C:\\a", "x"), "C:\\a\\x");
+        assert_eq!(clean_path_input("  \"C:\\a b\\\"\r\n"), "C:\\a b\\");
+        assert_eq!(clean_path_input(" \" \" "), "");
     }
 
     #[test]

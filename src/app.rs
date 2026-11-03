@@ -94,6 +94,8 @@ pub struct Tab {
     pub deep: bool,
     /// Background scan feeding subfolder search.
     pub scan: Option<ScanState>,
+    /// A path is being typed into the breadcrumb bar (shown even when not zoomed).
+    pub editing_path: bool,
     dirty: bool,
     focus_row: usize,
 }
@@ -140,6 +142,7 @@ impl Tab {
             filtered: Filtered::default(),
             deep: false,
             scan: None,
+            editing_path: false,
             dirty: true,
             focus_row: 0,
         }
@@ -478,6 +481,7 @@ impl App {
         let grid = p.grid();
         self.active_pane = pane;
         crate::grid::end_rename(self, false);
+        crate::grid::end_path_edit(self);
         crate::grid::sync(self, pane);
         self.sync_search_edit();
         invalidate(self.hwnd);
@@ -500,6 +504,7 @@ impl App {
     pub fn close_tab(&mut self, tab: TabId) {
         let Some(pane) = self.pane_of_tab(tab) else { return };
         crate::grid::end_rename(self, false);
+        crate::grid::end_path_edit(self);
         loader::cancel_tab(tab);
         self.tabs.remove(&tab);
         let p = self.panes.get_mut(&pane).unwrap();
@@ -693,6 +698,30 @@ impl App {
             t.pending_select = vec![key.clone()];
             t.reveal = Some((key, Reveal::Center));
             self.set_status(format!("Tab: {target}"));
+        }
+        self.process_wants(tid);
+        self.after_change(tid);
+        true
+    }
+
+    /// Goes to a typed or pasted path (quotes and %VARS% allowed; empty = This PC). Folders and
+    /// archives become the tab root; a file roots the tab at its folder with the file selected.
+    pub fn go_to(&mut self, tid: TabId, text: &str) -> bool {
+        let path = expand_env(&clean_path_input(text));
+        if path.is_empty() {
+            return self.navigate(tid, None, true);
+        }
+        let file = loader::entry_for_path(&path).filter(|e| e.kind == Kind::File);
+        let Some((parent, file)) = file.and_then(|e| parent_path(&e.path).map(|p| (p, e.path))) else {
+            return self.navigate(tid, Some(&path), true);
+        };
+        if !self.navigate(tid, Some(&parent), true) {
+            return false;
+        }
+        let key = path_key(&file);
+        if let Some(t) = self.tabs.get_mut(&tid) {
+            t.pending_select = vec![key.clone()];
+            t.reveal = Some((key, Reveal::Center));
         }
         self.process_wants(tid);
         self.after_change(tid);

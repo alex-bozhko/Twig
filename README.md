@@ -19,6 +19,10 @@ file operations.
 - When zoomed into a folder, the tab shows a zoom badge, a clickable
   breadcrumb bar sits above the columns, and the root row stays pinned at the
   top with an **Up** button.
+- Click the empty part of the breadcrumb bar (or press `Ctrl+L`, which works
+  on any tab) to type or paste a path. Quotes and `%VARS%` are fine, a file
+  path opens its folder with the file selected, `Enter` goes there, and `Esc`
+  or clicking away cancels.
 - Folder context menu adds **Expand all** / **Collapse all**.
 - Click a column header to sort, drag header edges to resize.
 - Type-to-search jumps to the next matching item in the current folder.
