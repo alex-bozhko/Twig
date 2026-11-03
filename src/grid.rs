@@ -625,14 +625,9 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         }
         if id == NodeId::SCAN_NOTE {
             if let Some(sc) = &t.scan {
-                let (label, color) = if sc.truncated {
-                    let limit = format_count(crate::scan::SCAN_LIMIT);
-                    (format!("\u{26A0} Subfolder search STOPPED at the {limit}-item limit \u{2014} items beyond it were NOT searched"), pal.error)
-                } else {
-                    (format!("Searching subfolders\u{2026} {} items in {} folders so far", format_count(sc.items), format_count(sc.folders)), pal.text_dim)
-                };
+                let label = format!("Searching subfolders\u{2026} {} items in {} folders so far (Alt+S stops)", format_count(sc.items), format_count(sc.folders));
                 let tx = m.text_x(sx, 0);
-                draw_text(hdc, &label, &rc(tx, y, (w - tx - m.pad).max(0), m.row), color, DT_LEFT_V);
+                draw_text(hdc, &label, &rc(tx, y, (w - tx - m.pad).max(0), m.row), pal.text_dim, DT_LEFT_V);
             }
             continue;
         }

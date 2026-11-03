@@ -15,7 +15,7 @@ impl NodeId {
     /// Placeholder row (a section header) that never resolves to a node.
     pub const SECTION: NodeId = NodeId { idx: u32::MAX, gen: u32::MAX };
 
-    /// Placeholder row with the subfolder-search progress or limit warning.
+    /// Placeholder row with the subfolder-search progress.
     pub const SCAN_NOTE: NodeId = NodeId { idx: u32::MAX - 2, gen: 0 };
 
     /// Placeholder row standing for the `i`-th group of items hidden by a filter.

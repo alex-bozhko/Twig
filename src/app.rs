@@ -9,7 +9,7 @@ use crate::fileops::{self, Op, UndoEntry};
 use crate::layout::{Layout, PaneId, Side};
 use crate::loader::{self, Done, Job, TabId};
 use crate::model::{Filtered, Kind, NodeId, SortKey, Tree};
-use crate::scan::{ScanMsg, SCAN_LIMIT};
+use crate::scan::ScanMsg;
 use crate::settings::{Favorite, LayoutEntry, Settings, TabEntry};
 use crate::shell;
 use crate::theme::{Fonts, Palette};
@@ -104,8 +104,6 @@ pub struct ScanState {
     pub items: usize,
     pub folders: usize,
     pub done: bool,
-    /// Stopped at `scan::SCAN_LIMIT` with folders left unsearched.
-    pub truncated: bool,
     /// Folders that couldn't be listed.
     pub errors: usize,
     /// Path key -> node, for folders the scan will list.
@@ -113,9 +111,9 @@ pub struct ScanState {
 }
 
 impl ScanState {
-    /// Shown as a note above the rows while scanning or after hitting the limit.
+    /// Shown as a note above the rows while scanning.
     pub fn needs_note(&self) -> bool {
-        !self.done || self.truncated
+        !self.done
     }
 }
 
@@ -708,29 +706,6 @@ impl App {
         self.after_change(tid);
     }
 
-    /// Goes to the parent of the tab root (or This PC from a drive root).
-    pub fn go_up(&mut self, tid: TabId) {
-        let Some(t) = self.tabs.get(&tid) else { return };
-        let Some(root) = t.root.clone() else { return };
-        match parent_path(&root) {
-            Some(p) => {
-                if self.navigate(tid, Some(&p), true) {
-                    if let Some(t) = self.tabs.get_mut(&tid) {
-                        t.pending_select = vec![path_key(&root)];
-                        t.reveal = Some((path_key(&root), Reveal::Center));
-                    }
-                    self.process_wants(tid);
-                }
-            }
-            None => {
-                self.navigate(tid, None, false);
-                if let Some(t) = self.tabs.get_mut(&tid) {
-                    t.pending_select = vec![path_key(&root)];
-                }
-            }
-        }
-    }
-
     // ---------- Loading ----------
 
     pub fn load_node(&mut self, tid: TabId, id: NodeId) {
@@ -1171,7 +1146,6 @@ impl App {
             items: 0,
             folders: 0,
             done: false,
-            truncated: false,
             errors: 0,
             index: HashMap::new(),
         });
@@ -1247,12 +1221,11 @@ impl App {
                     }
                     touched.insert(tab);
                 }
-                ScanMsg::Done { tab, id, items, truncated, errors } => {
+                ScanMsg::Done { tab, id, items, errors } => {
                     let Some(t) = self.tabs.get_mut(&tab) else { continue };
                     let Some(s) = t.scan.as_mut().filter(|s| s.handle.id == id) else { continue };
                     s.items = items;
                     s.done = true;
-                    s.truncated = truncated;
                     s.errors = errors;
                     s.index = HashMap::new();
                     touched.insert(tab);
@@ -1492,9 +1465,8 @@ impl App {
         invalidate(self.hwnd);
     }
 
-    /// Persistent status line for a filtered active tab (or one with subfolder search on), and
-    /// whether it carries a warning (the scan hit its limit).
-    pub fn filter_status(&self) -> Option<(String, bool)> {
+    /// Persistent status line for a filtered active tab (or one with subfolder search on).
+    pub fn filter_status(&self) -> Option<String> {
         let t = self.active_tab().and_then(|t| self.tabs.get(&t)).filter(|t| !t.filter.is_empty() || t.deep)?;
         let f = &t.filtered;
         let mut s = if t.filter.is_empty() {
@@ -1503,23 +1475,18 @@ impl App {
             let hidden: usize = f.hidden.iter().map(|h| h.1).sum();
             format!("Filter \u{201C}{}\u{201D}: {} of {} items match, {} hidden", t.filter, format_count(f.matched), format_count(f.total), format_count(hidden))
         };
-        let mut warn = false;
         if let Some(sc) = &t.scan {
             if !sc.done {
-                s += &format!(" \u{00B7} searching subfolders\u{2026} {} items in {} folders so far", format_count(sc.items), format_count(sc.folders));
-            } else if !sc.truncated {
+                s += &format!(" \u{00B7} searching subfolders\u{2026} {} items in {} folders so far (Alt+S stops)", format_count(sc.items), format_count(sc.folders));
+            } else {
                 s += &format!(" \u{00B7} all {} subfolders searched", format_count(sc.folders.saturating_sub(1)));
-            }
-            if sc.truncated {
-                warn = true;
-                s += &format!(" \u{00B7} \u{26A0} STOPPED at the {}-item limit: items beyond it were NOT searched", format_count(SCAN_LIMIT));
             }
             if sc.errors > 0 {
                 s += &format!(" \u{00B7} {} folder(s) couldn't be read", format_count(sc.errors));
             }
         }
         s += " \u{2014} Esc in the filter box clears it";
-        Some((s, warn))
+        Some(s)
     }
 
     // ---------- Clipboard ----------

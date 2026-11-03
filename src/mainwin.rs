@@ -31,7 +31,6 @@ const FUNNEL_W: i32 = 18;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Btn {
-    Up,
     Refresh,
     ThisPc,
     Favorites,
@@ -141,7 +140,7 @@ pub fn relayout(app: &mut App) {
     c.status = rc(0, h - sb, w, sb);
     c.buttons.clear();
     let mut x = pad;
-    for b in [Btn::Up, Btn::Refresh, Btn::ThisPc, Btn::Favorites] {
+    for b in [Btn::Refresh, Btn::ThisPc, Btn::Favorites] {
         c.buttons.push((b, rc(x, by, bw, bh)));
         x += bw + scale(2, d);
     }
@@ -351,16 +350,14 @@ fn drop_spot(app: &App, tab: TabId, x: i32, y: i32) -> Option<DropSpot> {
 // ---------- Painting ----------
 
 /// Status-bar hint while hovering the subfolder-search toggle.
-fn deep_hint(c: &Chrome) -> (String, bool) {
-    let limit = crate::util::format_count(crate::scan::SCAN_LIMIT);
-    let s = if !c.deep_available {
+fn deep_hint(c: &Chrome) -> String {
+    if !c.deep_available {
         "Search subfolders (Alt+S) \u{2014} not available in This PC: open a folder or drive first".to_string()
     } else if c.deep_active {
         "Search subfolders is ON (Alt+S to turn off) \u{2014} the filter also matches items inside collapsed folders".to_string()
     } else {
-        format!("Search subfolders (Alt+S) \u{2014} filter every item under this tab's folder, up to {limit} items")
-    };
-    (s, false)
+        "Search subfolders (Alt+S) \u{2014} filter every item under this tab's folder".to_string()
+    }
 }
 
 fn paint(app: &App, hdc: HDC, client: &RECT) {
@@ -371,7 +368,6 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
 
     // Toolbar
     fill(hdc, &c.toolbar, pal.toolbar);
-    let rooted = app.active_tab().and_then(|t| app.tabs.get(&t)).is_some_and(|t| t.root.is_some());
     for &(b, r) in &c.buttons {
         let hot = c.hot == Some(Hot::Button(b));
         let pressed = hot && c.pressed == Some(Hot::Button(b));
@@ -380,15 +376,13 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         } else if hot {
             fill(hdc, &r, pal.hover);
         }
-        let enabled = b != Btn::Up || rooted;
-        let color = if enabled { pal.text } else { pal.text_dim };
+        let color = pal.text;
         unsafe {
             if b == Btn::Browse {
                 SelectObject(hdc, app.fonts.ui);
                 draw_text(hdc, "Browse…", &r, color, DT_CENTER_V);
             } else {
                 let g = match b {
-                    Btn::Up => glyph::UP,
                     Btn::Refresh => glyph::REFRESH,
                     Btn::ThisPc => glyph::THIS_PC,
                     _ => glyph::STAR,
@@ -538,9 +532,9 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     let filter_status;
     let deep_hint = (c.hot == Some(Hot::Button(Btn::Deep)) && app.status.is_empty()).then(|| deep_hint(c));
     let (status, color) = match deep_hint.or_else(|| app.filter_status().filter(|_| app.status.is_empty())) {
-        Some((s, warn)) => {
+        Some(s) => {
             filter_status = s;
-            (&filter_status, if warn { pal.error } else { pal.accent })
+            (&filter_status, pal.accent)
         }
         None => (&app.status, if app.status_error { pal.error } else { pal.text_dim }),
     };
@@ -777,7 +771,6 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
             Hot::Button(b) => {
                 let tid = app.active_tab()?;
                 match b {
-                    Btn::Up => app.go_up(tid),
                     Btn::Refresh => app.refresh_tab(tid),
                     Btn::ThisPc => {
                         app.navigate(tid, None, true);

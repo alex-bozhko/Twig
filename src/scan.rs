@@ -1,8 +1,8 @@
 //! Background walk of a folder tree for the filter's "search subfolders" mode.
 //!
 //! A scan lists every folder under a tab's root, breadth first, and hands the listings to the
-//! UI thread in batches (WM_SCAN). It stops after `SCAN_LIMIT` items so a huge tree can't
-//! exhaust memory; the UI states clearly that the rest was not searched.
+//! UI thread in batches (WM_SCAN). There is no item limit: the user stops a long scan by
+//! turning subfolder search off or clearing the filter.
 
 use crate::loader::{list_dir, TabId};
 use crate::model::{Entry, Kind};
@@ -13,17 +13,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
 
-/// Most items one scan collects.
-pub const SCAN_LIMIT: usize = 250_000;
-
 const PUBLISH_EVERY: Duration = Duration::from_millis(250);
 const ATTR_REPARSE_POINT: u32 = 0x400;
 
 pub enum ScanMsg {
     /// Complete listings of some folders, parents before their children.
     Batch { tab: TabId, id: u64, dirs: Vec<(String, Vec<Entry>)>, items: usize, folders: usize },
-    /// The walk ended. `truncated`: it stopped at the limit with folders left unlisted.
-    Done { tab: TabId, id: u64, items: usize, truncated: bool, errors: usize },
+    /// The walk ended.
+    Done { tab: TabId, id: u64, items: usize, errors: usize },
 }
 
 pub struct ScanHandle {
@@ -58,7 +55,7 @@ pub fn start(tab: TabId, root: String) -> ScanHandle {
         }
         let mut last = Instant::now();
         let mut dirs = Vec::new();
-        let r = walk(&root, SCAN_LIMIT, &c2, |dir, entries, items, folders| {
+        let r = walk(&root, &c2, |dir, entries, items, folders| {
             dirs.push((dir, entries));
             if last.elapsed() >= PUBLISH_EVERY {
                 last = Instant::now();
@@ -71,7 +68,7 @@ pub fn start(tab: TabId, root: String) -> ScanHandle {
         if !dirs.is_empty() {
             publish(ScanMsg::Batch { tab, id, dirs, items: r.items, folders: r.folders });
         }
-        publish(ScanMsg::Done { tab, id, items: r.items, truncated: r.truncated, errors: r.errors });
+        publish(ScanMsg::Done { tab, id, items: r.items, errors: r.errors });
     });
     ScanHandle { id, cancel }
 }
@@ -94,21 +91,15 @@ pub struct WalkResult {
     pub items: usize,
     pub folders: usize,
     pub errors: usize,
-    pub truncated: bool,
 }
 
 /// Lists `root` and every folder below it, breadth first, calling `found(dir, entries, items,
-/// folders)` per listed folder. Junctions/symlinks and zip files are not entered. Stops before
-/// listing another folder once `limit` items were found (listings are never partial).
-pub fn walk(root: &str, limit: usize, cancel: &AtomicBool, mut found: impl FnMut(String, Vec<Entry>, usize, usize)) -> WalkResult {
+/// folders)` per listed folder. Junctions/symlinks and zip files are not entered.
+pub fn walk(root: &str, cancel: &AtomicBool, mut found: impl FnMut(String, Vec<Entry>, usize, usize)) -> WalkResult {
     let mut r = WalkResult::default();
     let mut queue = VecDeque::from([root.to_string()]);
     while let Some(dir) = queue.pop_front() {
         if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        if r.items >= limit {
-            r.truncated = true;
             break;
         }
         match list_dir(&dir) {
@@ -133,7 +124,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn walk_lists_breadth_first_and_stops_at_limit() {
+    fn walk_lists_breadth_first() {
         let base = std::env::temp_dir().join(format!("twig-scan-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         for d in ["a\\deep", "b"] {
@@ -145,16 +136,15 @@ mod tests {
         let root = base.to_string_lossy().to_string();
         let cancel = AtomicBool::new(false);
         let mut seen = Vec::new();
-        let r = walk(&root, usize::MAX, &cancel, |dir, e, _, _| seen.push((dir[root.len()..].to_string(), e.len())));
+        let r = walk(&root, &cancel, |dir, e, _, _| seen.push((dir[root.len()..].to_string(), e.len())));
         assert_eq!(seen, vec![(String::new(), 3), ("\\a".into(), 2), ("\\b".into(), 1), ("\\a\\deep".into(), 1)]);
-        assert_eq!((r.items, r.folders, r.errors, r.truncated), (7, 4, 0, false));
-        // The limit is checked between folders: whole listings only, and the rest is reported.
-        let r = walk(&root, 4, &cancel, |_, _, _, _| {});
-        assert_eq!((r.items, r.folders, r.truncated), (5, 2, true));
-        // Exactly reaching the limit with nothing left is not truncation.
-        let r = walk(&root, 7, &cancel, |_, _, _, _| {});
-        assert!(!r.truncated);
-        let missing = walk(&base.join("nope").to_string_lossy(), 10, &cancel, |_, _, _, _| {});
+        assert_eq!((r.items, r.folders, r.errors), (7, 4, 0));
+        // Cancelling stops before listing anything more.
+        cancel.store(true, Ordering::Relaxed);
+        let r = walk(&root, &cancel, |_, _, _, _| {});
+        assert_eq!((r.items, r.folders), (0, 0));
+        cancel.store(false, Ordering::Relaxed);
+        let missing = walk(&base.join("nope").to_string_lossy(), &cancel, |_, _, _, _| {});
         assert_eq!((missing.items, missing.errors), (0, 1));
         let _ = std::fs::remove_dir_all(&base);
     }
