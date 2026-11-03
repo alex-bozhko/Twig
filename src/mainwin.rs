@@ -43,7 +43,6 @@ pub fn tabs_stale(app: &App, pane: PaneId) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Btn {
     Refresh,
-    ThisPc,
     Favorites,
     ClearFilter,
     /// Subfolder-search toggle inside the filter box.
@@ -148,14 +147,13 @@ pub fn relayout(app: &mut App) {
     c.status = rc(0, h - sb, w, sb);
     c.buttons.clear();
     let mut x = pad;
-    for b in [Btn::Refresh, Btn::ThisPc, Btn::Favorites] {
+    for b in [Btn::Refresh, Btn::Favorites] {
         c.buttons.push((b, rc(x, by, bw, bh)));
         x += bw + scale(2, d);
     }
     x += scale(6, d);
-    let avail = (w - pad - x).max(0);
-    let search_w = scale(420, d).min(avail);
-    c.search_rect = rc(w - pad - search_w, by, search_w, bh);
+    let search_w = (w - pad - x).max(0);
+    c.search_rect = rc(x, by, search_w, bh);
     layout_search(app);
 
     let area = Rect::new(0, tb, w, h - tb - sb);
@@ -367,7 +365,6 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         }
         let g = match b {
             Btn::Refresh => glyph::REFRESH,
-            Btn::ThisPc => glyph::THIS_PC,
             _ => glyph::STAR,
         };
         unsafe {
@@ -748,9 +745,6 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
                 let tid = app.active_tab()?;
                 match b {
                     Btn::Refresh => app.refresh_tab(tid),
-                    Btn::ThisPc => {
-                        app.navigate(tid, None, true);
-                    }
                     Btn::Favorites => {
                         let r = app.chrome.buttons.iter().find(|(bb, _)| *bb == b).map(|(_, r)| *r)?;
                         return Some(Deferred::Favorites(r));
