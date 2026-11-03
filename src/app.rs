@@ -94,7 +94,7 @@ pub struct Tab {
     pub deep: bool,
     /// Background scan feeding subfolder search.
     pub scan: Option<ScanState>,
-    /// A path is being typed into the breadcrumb bar (shown even when not zoomed).
+    /// A path is being typed into the breadcrumb bar.
     pub editing_path: bool,
     dirty: bool,
     focus_row: usize,

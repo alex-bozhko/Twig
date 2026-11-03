@@ -162,7 +162,7 @@ pub struct Geo {
 impl Geo {
     /// Call after `t.ensure_rows()`.
     fn of(m: &Metrics, t: &Tab) -> Geo {
-        let crumb = if t.zoomed() || t.editing_path { m.header } else { 0 };
+        let crumb = m.header;
         let pin = t.pinned();
         let body = crumb + m.header;
         Geo { crumb, header_y: crumb, body, pin, scroll_y: body + pin as i32 * m.row, row: m.row }
@@ -257,8 +257,15 @@ fn crumb_layout(app: &App, hdc: HDC, path: &str, w: i32) -> Vec<Crumb> {
 }
 
 fn tab_crumbs(app: &App, pane: PaneId, hdc: HDC, w: i32) -> Vec<Crumb> {
-    let root = active_tid(app, pane).and_then(|t| app.tabs.get(&t)).and_then(|t| t.root.clone());
-    root.map(|r| crumb_layout(app, hdc, &r, w)).unwrap_or_default()
+    let Some(t) = active_tid(app, pane).and_then(|t| app.tabs.get(&t)) else { return Vec::new() };
+    match &t.root {
+        Some(r) => crumb_layout(app, hdc, r, w),
+        // This PC: just the (current, so unclickable) PC icon.
+        None => {
+            let m = metrics(app);
+            vec![Crumb { x: m.pad / 2, w: m.chev + 2 * m.pad, label: glyph::THIS_PC.to_string(), target: None }]
+        }
+    }
 }
 
 enum Deferred {
@@ -765,7 +772,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let view = app.panes[&pane].view_rows;
     let cut = app.cut.as_ref().map(|(_, set)| set);
     let bar_hover = app.grid_ui.bar_hover.filter(|h| h.0 == pane).map(|h| h.1);
-    let crumbs = if app.tabs.get(&tid).is_some_and(|t| t.zoomed() && !t.editing_path) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
+    let crumbs = if app.tabs.get(&tid).is_some_and(|t| !t.editing_path) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
     let geo = Geo::of(&m, t);
@@ -775,7 +782,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     unsafe {
         SelectObject(hdc, font);
     }
-    // Breadcrumb (zoomed into a folder, or the path editor's backdrop).
+    // Breadcrumb (or the path editor's backdrop).
     if geo.crumb > 0 {
         fill(hdc, &rc(0, geo.crumb - 1, w, 1), pal.border);
         let sep = scale(14, app.dpi);
