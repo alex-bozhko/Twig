@@ -150,7 +150,7 @@ pub mod glyph {
     pub const ADD: &str = "\u{E710}";
     pub const SEARCH: &str = "\u{E721}";
     pub const FILTER: &str = "\u{E71C}";
-    pub const ZOOM: &str = "\u{E71E}";
+    pub const ZOOM: &str = "\u{E838}";
     pub const UP: &str = "\u{E74A}";
     pub const CHECKBOX: &str = "\u{E739}";
     pub const CHECKBOX_CHECKED: &str = "\u{E73A}";
