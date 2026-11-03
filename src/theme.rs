@@ -71,6 +71,8 @@ pub struct Fonts {
     pub ui: HFONT,
     pub glyph: HFONT,
     pub glyph_small: HFONT,
+    /// Breadcrumb chevrons and PC icon.
+    pub glyph_mid: HFONT,
     pub ui_height: i32,
 }
 
@@ -94,8 +96,9 @@ impl Fonts {
             let ui = CreateFontIndirectW(&ncm.lfMessageFont);
             let glyph = glyph_font(scale(16, dpi));
             let glyph_small = glyph_font(scale(10, dpi));
+            let glyph_mid = glyph_font(scale(12, dpi));
             let ui_height = crate::win::font_height(ui);
-            Fonts { ui, glyph, glyph_small, ui_height }
+            Fonts { ui, glyph, glyph_small, glyph_mid, ui_height }
         }
     }
 }
@@ -106,6 +109,7 @@ impl Drop for Fonts {
             let _ = DeleteObject(self.ui);
             let _ = DeleteObject(self.glyph);
             let _ = DeleteObject(self.glyph_small);
+            let _ = DeleteObject(self.glyph_mid);
         }
     }
 }

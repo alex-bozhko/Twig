@@ -220,11 +220,28 @@ struct Crumb {
     target: Option<Option<String>>,
 }
 
+/// The address-field box around the breadcrumb (the path editor covers the same rect).
+fn crumb_box(app: &App, w: i32) -> RECT {
+    let m = metrics(app);
+    rc(m.pad / 2, scale(2, app.dpi), w - m.pad, m.header - scale(5, app.dpi))
+}
+
+/// Gap between breadcrumb segments (holds the chevron).
+fn crumb_sep(app: &App) -> i32 {
+    scale(18, app.dpi)
+}
+
+/// Left edge of the first breadcrumb segment (the PC icon).
+fn crumb_x0(app: &App) -> i32 {
+    metrics(app).pad / 2 + scale(3, app.dpi)
+}
+
 /// Lays out the breadcrumb for `path` within width `w`; elides leading folders when it doesn't fit.
 fn crumb_layout(app: &App, hdc: HDC, path: &str, w: i32) -> Vec<Crumb> {
     let m = metrics(app);
     let font = app.fonts.ui;
-    let sep = scale(14, app.dpi);
+    let sep = crumb_sep(app);
+    let x0 = crumb_x0(app);
     let mut segs: Vec<(String, Option<String>)> = crumbs(path).into_iter().map(|(l, p)| (l, Some(p))).collect();
     if let Some(last) = segs.last_mut() {
         last.1 = None;
@@ -235,12 +252,12 @@ fn crumb_layout(app: &App, hdc: HDC, path: &str, w: i32) -> Vec<Crumb> {
         pc_w + segs.iter().map(|(l, _)| sep + seg_w(l)).sum::<i32>() + if elided { sep + seg_w("\u{2026}") } else { 0 }
     };
     let mut elided = false;
-    while segs.len() > 1 && need(&segs, elided) > w - m.pad {
+    while segs.len() > 1 && need(&segs, elided) > w - 2 * x0 {
         segs.remove(0);
         elided = true;
     }
-    let mut out = vec![Crumb { x: m.pad / 2, w: pc_w, label: glyph::THIS_PC.to_string(), target: Some(None) }];
-    let mut x = m.pad / 2 + pc_w;
+    let mut out = vec![Crumb { x: x0, w: pc_w, label: glyph::THIS_PC.to_string(), target: Some(None) }];
+    let mut x = x0 + pc_w;
     if elided {
         x += sep;
         let ew = seg_w("\u{2026}");
@@ -263,7 +280,7 @@ fn tab_crumbs(app: &App, pane: PaneId, hdc: HDC, w: i32) -> Vec<Crumb> {
         // This PC: just the (current, so unclickable) PC icon.
         None => {
             let m = metrics(app);
-            vec![Crumb { x: m.pad / 2, w: m.chev + 2 * m.pad, label: glyph::THIS_PC.to_string(), target: None }]
+            vec![Crumb { x: crumb_x0(app), w: m.chev + 2 * m.pad, label: glyph::THIS_PC.to_string(), target: None }]
         }
     }
 }
@@ -795,6 +812,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let cut = app.cut.as_ref().map(|(_, set)| set);
     let bar_hover = app.grid_ui.bar_hover.filter(|h| h.0 == pane).map(|h| h.1);
     let crumbs = if app.tabs.get(&tid).is_some_and(|t| !t.editing_path) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
+    let (cbox, sep, glyph_mid) = (crumb_box(app, r.right), crumb_sep(app), app.fonts.glyph_mid);
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
     let geo = Geo::of(&m, t);
@@ -807,24 +825,27 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     // Breadcrumb (or the path editor's backdrop).
     if geo.crumb > 0 {
         fill(hdc, &rc(0, geo.crumb - 1, w, 1), pal.border);
-        let sep = scale(14, app.dpi);
+        let editing = crumbs.is_empty();
+        if !editing {
+            frame(hdc, &cbox, pal.border, 1);
+        }
         let last = crumbs.len().saturating_sub(1);
         for (i, c) in crumbs.iter().enumerate() {
-            let cr = rc(c.x, scale(3, app.dpi), c.w, geo.crumb - scale(7, app.dpi));
+            let cr = rc(c.x, scale(5, app.dpi), c.w, geo.crumb - scale(11, app.dpi));
             if c.target.is_some() && bar_hover == Some(BarHot::Crumb(i)) {
                 fill(hdc, &cr, pal.hover);
             }
-            let color = if i == last { pal.text } else { pal.text_dim };
+            let color = if i == last { pal.text } else { pal.text_soft };
             if i > 0 {
                 unsafe {
-                    SelectObject(hdc, glyph_small);
+                    SelectObject(hdc, glyph_mid);
                 }
-                draw_text(hdc, glyph::CHEVRON_RIGHT, &rc(c.x - sep, 0, sep, geo.crumb), pal.text_dim, DT_CENTER_V);
+                draw_text(hdc, glyph::CHEVRON_RIGHT, &rc(c.x - sep, 0, sep, geo.crumb - scale(1, app.dpi)), pal.text_dim, DT_CENTER_V);
             }
             unsafe {
-                SelectObject(hdc, if i == 0 { glyph_small } else { font });
+                SelectObject(hdc, if i == 0 { glyph_mid } else { font });
             }
-            draw_text(hdc, &c.label, &rc(c.x, 0, c.w, geo.crumb), color, DT_CENTER_V);
+            draw_text(hdc, &c.label, &rc(c.x, 0, c.w, geo.crumb - scale(1, app.dpi)), color, DT_CENTER_V);
         }
         unsafe {
             SelectObject(hdc, font);
@@ -1710,13 +1731,13 @@ pub fn begin_path_edit(app: &mut App, pane: PaneId) {
 fn place_path_edit(app: &mut App) {
     let Some(pe) = &app.grid_ui.path_edit else { return };
     let (edit, pane, tid) = (isize_to_hwnd(pe.edit), pe.pane, pe.tab);
-    let m = metrics(app);
-    let d = app.dpi;
     let shown = active_tid(app, pane) == Some(tid);
     let w = app.panes.get(&pane).map_or(0, |p| client_rect(p.grid()).right);
+    let mut b = crumb_box(app, w);
+    b.right = b.right.max(b.left);
     unsafe {
         if shown {
-            let _ = MoveWindow(edit, m.pad / 2, scale(2, d), (w - m.pad).max(0), m.header - scale(5, d), true);
+            let _ = MoveWindow(edit, b.left, b.top, b.right - b.left, b.bottom - b.top, true);
             let _ = ShowWindow(edit, SW_SHOW);
         } else {
             let _ = ShowWindow(edit, SW_HIDE);
