@@ -838,15 +838,24 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let sort_col = t.tree.sort.column();
     for (c, title) in TITLES.iter().enumerate() {
         let cw = m.cols[c];
-        let flags = if c == 3 { DT_RIGHT_V } else { DT_LEFT_V };
-        draw_text(hdc, title, &rc(x0 + m.pad, hy, cw - 2 * m.pad, m.header), pal.text, flags);
+        let right = c == 3;
+        let flags = if right { DT_RIGHT_V } else { DT_LEFT_V };
+        let sorted = c == sort_col;
+        let tr = rc(x0 + m.pad, hy, cw - 2 * m.pad, m.header);
+        draw_text(hdc, title, &tr, if sorted { pal.text } else { pal.text_soft }, flags);
         fill(hdc, &rc(x0 + cw - 1, hy + m.header / 4, 1, m.header / 2), pal.border);
-        if c == sort_col {
+        if sorted {
+            // Sort arrow right after the title (before it for the right-aligned Size column).
+            let aw = scale(16, app.dpi);
+            let tw = text_width(hdc, font, title).min(tr.right - tr.left);
+            let ax = if right { tr.right - tw - aw } else { tr.left + tw };
             unsafe {
                 SelectObject(hdc, glyph_small);
             }
             let g = if t.tree.desc { glyph::CHEVRON_DOWN } else { CHEVRON_UP };
-            draw_text(hdc, g, &rc(x0, hy, cw, scale(10, app.dpi)), pal.text_dim, DT_CENTER_V);
+            if ax >= x0 && ax + aw <= x0 + cw {
+                draw_text(hdc, g, &rc(ax, hy, aw, m.header), pal.accent, DT_CENTER_V);
+            }
             unsafe {
                 SelectObject(hdc, font);
             }
