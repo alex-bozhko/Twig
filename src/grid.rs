@@ -850,6 +850,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     }
     // Breadcrumb (or the path editor's backdrop).
     if geo.crumb > 0 {
+        fill(hdc, &rc(0, 0, w, geo.crumb - 1), pal.toolbar);
         fill(hdc, &rc(0, geo.crumb - 1, w, 1), pal.border);
         let last = crumbs.len().saturating_sub(1);
         for (i, c) in crumbs.iter().enumerate() {
