@@ -29,6 +29,7 @@ file operations.
 - Type-to-search jumps to the next matching item in the current folder.
 - The status bar shows the active tab's item count, and the number and total
   size of selected items.
+- Hidden items and dot-files/folders (`.git`, `.vscode`) are drawn faded.
 - Keyboard: arrows, `Home`/`End`, `PgUp`/`PgDn`, `←`/`→` collapse/expand,
   `Ctrl+A`, `Ctrl+Space`, `F5` refresh.
 

@@ -179,8 +179,9 @@ impl Node {
             scanned: false,
         }
     }
+    /// Hidden-attribute items and dot-files/folders (Unix-style hidden), drawn faded.
     pub fn is_hidden(&self) -> bool {
-        self.attrs & ATTR_HIDDEN != 0
+        self.attrs & ATTR_HIDDEN != 0 || (self.kind != Kind::Drive && self.name.starts_with('.'))
     }
     /// Whether to draw an expand chevron.
     pub fn expandable(&self) -> bool {
@@ -854,6 +855,16 @@ mod tests {
 
     fn names(t: &Tree, ids: &[NodeId]) -> Vec<String> {
         ids.iter().map(|&i| t.get(i).unwrap().name.clone()).collect()
+    }
+
+    #[test]
+    fn dot_names_count_as_hidden() {
+        let mut hidden = entry("plain", Kind::File, 0);
+        hidden.attrs = ATTR_HIDDEN;
+        let node = |e: Entry| Node::from_entry(e, None, 0);
+        assert!(node(hidden).is_hidden());
+        assert!(node(entry(".git", Kind::Dir, 0)).is_hidden());
+        assert!(!node(entry("a.txt", Kind::File, 0)).is_hidden());
     }
 
     #[test]
