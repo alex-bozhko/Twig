@@ -252,6 +252,36 @@ impl Tab {
         }
     }
 
+    /// Status-bar summary of the shown rows, e.g. "120 items · 3 selected (1.2 MB)" (call after `ensure_rows`).
+    pub fn summary(&self) -> String {
+        if self.error.is_some() {
+            return String::new();
+        }
+        let (mut items, mut sel, mut bytes, mut files) = (0usize, 0usize, 0u64, false);
+        for &id in &self.rows[self.pinned()..] {
+            if id.is_placeholder() || self.filtered.context.contains(&id) {
+                continue;
+            }
+            let Some(n) = self.tree.get(id) else { continue };
+            items += 1;
+            if n.selected {
+                sel += 1;
+                if !n.kind.is_container() {
+                    files = true;
+                    bytes += n.size;
+                }
+            }
+        }
+        let mut s = format!("{} {}", format_count(items), if items == 1 { "item" } else { "items" });
+        if sel > 0 {
+            s += &format!(" \u{00B7} {} selected", format_count(sel));
+            if files {
+                s += &format!(" ({})", format_size(bytes));
+            }
+        }
+        s
+    }
+
     /// Selected nodes in display order, or the focused node if nothing is selected.
     pub fn selected(&mut self) -> Vec<NodeId> {
         self.ensure_rows();

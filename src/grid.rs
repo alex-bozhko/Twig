@@ -358,7 +358,12 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
     let (x, y) = (x_of(lp), y_of(lp));
     match msg {
         WM_PAINT => {
-            if with_app(|app| paint_buffered(hwnd, |hdc, r| draw(app, pane, hwnd, hdc, r))).is_none() {
+            if with_app(|app| {
+                paint_buffered(hwnd, |hdc, r| draw(app, pane, hwnd, hdc, r));
+                update_summary(app, pane);
+            })
+            .is_none()
+            {
                 let mut ps = PAINTSTRUCT::default();
                 BeginPaint(hwnd, &mut ps);
                 let _ = EndPaint(hwnd, &ps);
@@ -756,6 +761,21 @@ fn format_time(ft: u64) -> String {
         GetTimeFormatEx(PCWSTR::null(), TIME_NOSECONDS, Some(&local), PCWSTR::null(), Some(&mut t));
         format!("{} {}", from_wide(&d), from_wide(&t))
     }
+}
+
+/// Refreshes the status-bar item summary from the active pane's tab.
+fn update_summary(app: &mut App, pane: PaneId) {
+    if pane != app.active_pane {
+        return;
+    }
+    let s = match active_tid(app, pane).and_then(|tid| app.tabs.get_mut(&tid)) {
+        Some(t) => {
+            t.ensure_rows();
+            t.summary()
+        }
+        None => String::new(),
+    };
+    crate::mainwin::set_summary(app, s);
 }
 
 fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {

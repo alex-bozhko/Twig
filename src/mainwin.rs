@@ -118,6 +118,8 @@ pub struct Chrome {
     split_drag: Option<(Splitter, i32)>,
     overlay: isize,
     last_focus: isize,
+    /// Item/selection summary of the active tab, right-aligned in the status bar.
+    summary: String,
 }
 
 fn to_rect(r: Rect) -> RECT {
@@ -519,7 +521,22 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         }
         None => (&app.status, if app.status_error { pal.error } else { pal.text_dim }),
     };
+    let mut sr = sr;
+    if !c.summary.is_empty() {
+        draw_text(hdc, &c.summary, &sr, pal.text_dim, DT_RIGHT_V);
+        sr.right -= text_width(hdc, app.fonts.ui, &c.summary) + scale(24, d);
+    }
     draw_text(hdc, status, &sr, color, DT_LEFT_V);
+}
+
+/// Updates the status-bar item summary, repainting the status bar if it changed.
+pub fn set_summary(app: &mut App, s: String) {
+    if app.chrome.summary != s {
+        app.chrome.summary = s;
+        unsafe {
+            let _ = InvalidateRect(app.hwnd, Some(&app.chrome.status), false);
+        }
+    }
 }
 
 // ---------- Drag overlay ----------
