@@ -324,7 +324,6 @@ pub struct App {
     pub status_error: bool,
     /// Our last "cut" clipboard object and the cut paths (keys) for ghosting.
     pub cut: Option<(IDataObject, HashSet<String>)>,
-    pub path_edit: HWND,
     pub search_edit: HWND,
     pub grid_ui: crate::grid::GridUi,
     pub chrome: crate::mainwin::Chrome,
@@ -336,7 +335,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(hwnd: HWND, path_edit: HWND, search_edit: HWND, dpi: u32, dark: bool, settings: Settings) -> Box<App> {
+    pub fn new(hwnd: HWND, search_edit: HWND, dpi: u32, dark: bool, settings: Settings) -> Box<App> {
         let mut app = Box::new(App {
             hwnd,
             dpi,
@@ -353,7 +352,6 @@ impl App {
             status: String::new(),
             status_error: false,
             cut: None,
-            path_edit,
             search_edit,
             grid_ui: Default::default(),
             chrome: Default::default(),
@@ -377,7 +375,6 @@ impl App {
         app.layout = layout;
         app.active_pane = active.unwrap_or_else(|| app.layout.panes()[0]);
         app.maximized = maximized;
-        app.sync_path_edit();
         app
     }
 
@@ -482,7 +479,6 @@ impl App {
         self.active_pane = pane;
         crate::grid::end_rename(self, false);
         crate::grid::sync(self, pane);
-        self.sync_path_edit();
         self.sync_search_edit();
         invalidate(self.hwnd);
         unsafe {
@@ -493,7 +489,6 @@ impl App {
     pub fn activate_pane(&mut self, pane: PaneId) {
         if self.active_pane != pane && self.panes.contains_key(&pane) {
             self.active_pane = pane;
-            self.sync_path_edit();
             self.sync_search_edit();
             invalidate(self.hwnd);
             for p in self.panes.values() {
@@ -1110,7 +1105,6 @@ impl App {
             if self.panes[&pane].active_tab() == Some(tid) {
                 crate::grid::sync(self, pane);
                 if pane == self.active_pane {
-                    self.sync_path_edit();
                     self.sync_search_edit();
                 }
             }
@@ -1282,16 +1276,6 @@ impl App {
             self.scroll_into_view(tid, r);
         }
         self.after_change(tid);
-    }
-
-    pub fn sync_path_edit(&mut self) {
-        if self.chrome.path_editing {
-            return;
-        }
-        let text = self.active_tab().and_then(|t| self.tabs.get(&t)).and_then(|t| t.root.clone()).unwrap_or_default();
-        if get_text(self.path_edit) != text {
-            set_text(self.path_edit, &text);
-        }
     }
 
     // ---------- Change notifications ----------
@@ -1714,7 +1698,6 @@ impl App {
         for p in self.panes.values() {
             crate::theme::set_control_theme(p.grid(), dark, "DarkMode_Explorer");
         }
-        crate::theme::set_control_theme(self.path_edit, dark, "DarkMode_CFD");
         unsafe {
             let _ = windows::Win32::Graphics::Gdi::RedrawWindow(
                 self.hwnd,

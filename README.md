@@ -27,8 +27,7 @@ file operations.
 
 ### Tabs and panes
 
-- `Ctrl+T` new tab, `Ctrl+W` close, `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle,
-  `Ctrl+L` focus the path box.
+- `Ctrl+T` new tab, `Ctrl+W` close, `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle.
 - Drag a tab onto another pane's strip to move it, or onto a pane edge to
   dock it into a new split.
 - Double-click a tab (or the empty tab strip) to maximize that pane; again

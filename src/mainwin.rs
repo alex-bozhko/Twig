@@ -91,8 +91,6 @@ struct TabDrag {
 
 #[derive(Default)]
 pub struct Chrome {
-    /// The path box has focus; don't overwrite what the user is typing.
-    pub path_editing: bool,
     /// The filter box has focus.
     pub search_editing: bool,
     /// The active tab is filtered (shows the clear button and accent border).
@@ -105,7 +103,6 @@ pub struct Chrome {
     pub drag_hover: Option<(PaneId, usize)>,
     toolbar: RECT,
     status: RECT,
-    path_rect: RECT,
     search_rect: RECT,
     clear_rect: RECT,
     deep_rect: RECT,
@@ -157,21 +154,8 @@ pub fn relayout(app: &mut App) {
     }
     x += scale(6, d);
     let avail = (w - pad - x).max(0);
-    let search_w = scale(300, d).min(avail * 2 / 5);
-    let path_right = (x + avail - search_w - pad).max(x + scale(60, d));
-    c.path_rect = rc(x, by, path_right - x, bh);
-    c.search_rect = rc(path_right + pad, by, search_w, bh);
-    let eh = app.fonts.ui_height + 2;
-    unsafe {
-        let _ = MoveWindow(
-            app.path_edit,
-            c.path_rect.left + scale(10, d),
-            c.path_rect.top + (bh - eh) / 2,
-            (c.path_rect.right - c.path_rect.left - scale(20, d)).max(0),
-            eh,
-            true,
-        );
-    }
+    let search_w = scale(420, d).min(avail);
+    c.search_rect = rc(w - pad - search_w, by, search_w, bh);
     layout_search(app);
 
     let area = Rect::new(0, tb, w, h - tb - sb);
@@ -391,9 +375,6 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         }
         draw_text(hdc, g, &r, pal.text, DT_CENTER_V);
     }
-    fill(hdc, &c.path_rect, pal.edit_bg);
-    let border = if c.path_editing { pal.accent } else { pal.border };
-    frame(hdc, &c.path_rect, border, if c.path_editing { scale(2, d).max(1) } else { 1 });
     if c.search_rect.right > c.search_rect.left {
         fill(hdc, &c.search_rect, pal.edit_bg);
         let lit = c.search_editing || c.filter_active;
@@ -680,11 +661,7 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
             }
             None => {
                 let c = &app.chrome;
-                return if pt_in(&c.path_rect, x, y) {
-                    Some(app.path_edit)
-                } else {
-                    pt_in(&c.search_rect, x, y).then_some(app.search_edit)
-                };
+                return pt_in(&c.search_rect, x, y).then_some(app.search_edit);
             }
         }
         None
@@ -991,49 +968,11 @@ fn on_menu_rbutton_up(hwnd: HWND, pos: usize, menu: HMENU) {
     }
 }
 
-// ---------- Path box ----------
-
-unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
-    match msg {
-        WM_KEYDOWN if wp.0 == VK_RETURN.0 as usize => {
-            post_main(WM_PATH_ENTER);
-            return LRESULT(0);
-        }
-        WM_KEYDOWN if wp.0 == VK_ESCAPE.0 as usize => {
-            post_main(WM_PATH_ESCAPE);
-            return LRESULT(0);
-        }
-        // Swallow Enter/Esc characters (no beep); Ctrl+A selects all.
-        WM_CHAR if wp.0 == 0x0D || wp.0 == 0x1B => return LRESULT(0),
-        WM_CHAR if wp.0 == 0x01 => {
-            SendMessageW(hwnd, EM_SETSEL, WPARAM(0), LPARAM(-1));
-            return LRESULT(0);
-        }
-        WM_SETFOCUS | WM_KILLFOCUS => post_main(WM_FOCUS_CHANGED),
-        WM_NCDESTROY => {
-            let _ = RemoveWindowSubclass(hwnd, Some(edit_proc), 1);
-        }
-        _ => {}
-    }
-    DefSubclassProc(hwnd, msg, wp, lp)
-}
-
-pub fn create_path_edit(parent: HWND) -> HWND {
-    unsafe {
-        let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
-        let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("EDIT"), PCWSTR::null(), style, 0, 0, 0, 0, parent, None, instance(), None)
-            .unwrap_or_default();
-        let _ = SetWindowSubclass(h, Some(edit_proc), 1, 0);
-        h
-    }
-}
-
 fn apply_edit_font(app: &App) {
     unsafe {
-        for e in [app.path_edit, app.search_edit] {
-            SendMessageW(e, WM_SETFONT, WPARAM(app.fonts.ui.0 as usize), LPARAM(1));
-            SendMessageW(e, EM_SETMARGINS, WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize), LPARAM(0));
-        }
+        let e = app.search_edit;
+        SendMessageW(e, WM_SETFONT, WPARAM(app.fonts.ui.0 as usize), LPARAM(1));
+        SendMessageW(e, EM_SETMARGINS, WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize), LPARAM(0));
     }
 }
 
@@ -1106,74 +1045,13 @@ fn on_focus_changed() {
             app.chrome.search_editing = searching;
             invalidate(app.hwnd);
         }
-        if f == app.path_edit {
-            if !app.chrome.path_editing {
-                app.chrome.path_editing = true;
-                SendMessageW(app.path_edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
-                invalidate(app.hwnd);
-            }
-        } else {
-            if app.chrome.path_editing {
-                app.chrome.path_editing = false;
-                app.sync_path_edit();
-                invalidate(app.hwnd);
-            }
-            if let Some(p) = app.panes.values().find(|p| p.grid() == f).map(|p| p.id) {
-                app.activate_pane(p);
-            }
+        if let Some(p) = app.panes.values().find(|p| p.grid() == f).map(|p| p.id) {
+            app.activate_pane(p);
         }
         if !f.is_invalid() && IsChild(app.hwnd, f).as_bool() {
             app.chrome.last_focus = hwnd_to_isize(f);
         }
     });
-}
-
-fn on_path_enter() {
-    let grid = with_app(|app| {
-        let text = get_text(app.path_edit);
-        let text = text.trim().trim_matches('"').trim();
-        let expanded = expand_env(text);
-        let tid = app.active_tab()?;
-        let target = (!expanded.is_empty()).then_some(expanded.as_str());
-        app.navigate(tid, target, true).then(|| {
-            app.chrome.path_editing = false;
-            app.sync_path_edit();
-            app.panes[&app.active_pane].grid()
-        })
-    })
-    .flatten();
-    if let Some(g) = grid {
-        unsafe {
-            let _ = SetFocus(g);
-        }
-    }
-}
-
-fn expand_env(s: &str) -> String {
-    if !s.contains('%') {
-        return s.to_string();
-    }
-    let src = wide(s);
-    let mut buf = vec![0u16; 4096];
-    let n = unsafe { windows::Win32::System::Environment::ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut buf)) };
-    if n == 0 || n as usize > buf.len() {
-        return s.to_string();
-    }
-    from_wide(&buf)
-}
-
-fn on_path_escape() {
-    let grid = with_app(|app| {
-        app.chrome.path_editing = false;
-        app.sync_path_edit();
-        app.panes.get(&app.active_pane).map(|p| p.grid())
-    })
-    .flatten();
-    if let Some(g) = grid {
-        unsafe {
-            let _ = SetFocus(g);
-        }
-    }
 }
 
 // ---------- Window procedure ----------
@@ -1225,10 +1103,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     if app.dark != dark {
                         app.set_dark(dark);
                         EDIT_COLORS.set((app.pal.text, app.pal.edit_bg));
-                        crate::theme::set_control_theme(app.path_edit, dark, "DarkMode_CFD");
                         crate::theme::set_control_theme(app.search_edit, dark, "DarkMode_CFD");
                         app.invalidate_grids();
-                        invalidate(app.path_edit);
                         invalidate(app.search_edit);
                         invalidate(hwnd);
                     }
@@ -1262,16 +1138,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             on_focus_changed();
             return LRESULT(0);
         }
-        WM_PATH_ENTER => {
-            on_path_enter();
-            return LRESULT(0);
-        }
-        WM_PATH_ESCAPE => {
-            on_path_escape();
-            return LRESULT(0);
-        }
         WM_COMMAND => {
-            // Only the filter box: the path edit also sends EN_CHANGE when a tab switch syncs it.
             if (wp.0 >> 16) as u32 == EN_CHANGE && lp.0 == SEARCH_EDIT.load(std::sync::atomic::Ordering::Relaxed) {
                 // Sent synchronously (possibly while the state is borrowed): handle it later.
                 // on_filter_changed is a no-op unless the filter box text differs from the tab.
@@ -1454,12 +1321,11 @@ pub fn create_main_window(settings: &crate::settings::Settings) -> (HWND, bool) 
     }
 }
 
-/// Sets up the path box font/theme after the app state is installed.
+/// Sets up the filter box font/theme after the app state is installed.
 pub fn init_chrome() {
     with_app(|app| {
         apply_edit_font(app);
         EDIT_COLORS.set((app.pal.text, app.pal.edit_bg));
-        crate::theme::set_control_theme(app.path_edit, app.dark, "DarkMode_CFD");
         crate::theme::set_control_theme(app.search_edit, app.dark, "DarkMode_CFD");
         app.sync_search_edit();
         relayout(app);
@@ -1535,17 +1401,6 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
                     relayout(app);
                 }
             });
-            true
-        }
-        0x4C if !sh => {
-            // Ctrl+L
-            let edit = with_app(|app| app.path_edit);
-            if let Some(e) = edit {
-                unsafe {
-                    let _ = SetFocus(e);
-                    SendMessageW(e, EM_SETSEL, WPARAM(0), LPARAM(-1));
-                }
-            }
             true
         }
         0x46 if !sh => {
