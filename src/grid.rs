@@ -839,7 +839,7 @@ fn update_summary(app: &mut App, pane: PaneId) {
 fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let m = metrics(app);
     let pal = app.pal;
-    let (font, glyph_small) = (app.fonts.ui, app.fonts.glyph_small);
+    let (font, glyph_small, glyph_font) = (app.fonts.ui, app.fonts.glyph_small, app.fonts.glyph);
     fill(hdc, r, pal.bg);
     let Some(tid) = active_tid(app, pane) else { return };
     let focus_hwnd = unsafe { GetFocus() };
@@ -1027,14 +1027,18 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         cx += m.cols[2];
         if pinned {
             let up = up_button(&m, w, y);
-            fill(hdc, &up, if bar_hover == Some(BarHot::Up) { pal.hover } else { bg });
-            if bg == pal.bg && bar_hover != Some(BarHot::Up) {
-                wash(hdc, &up, pal.accent, 24);
+            let inset = m.pad / 2;
+            let pill = RECT { left: up.left + inset, top: up.top + inset, right: up.right - inset, bottom: up.bottom - inset };
+            if bar_hover == Some(BarHot::Up) {
+                fill(hdc, &pill, pal.hover);
+                frame(hdc, &pill, pal.accent, 1);
+            } else {
+                wash(hdc, &pill, pal.accent, 40);
             }
             unsafe {
-                SelectObject(hdc, glyph_small);
+                SelectObject(hdc, glyph_font);
             }
-            draw_text(hdc, glyph::UP, &up, pal.text, DT_CENTER_V);
+            draw_text(hdc, glyph::UP, &pill, pal.accent, DT_CENTER_V);
             unsafe {
                 SelectObject(hdc, font);
             }
