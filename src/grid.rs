@@ -74,9 +74,9 @@ pub struct GridUi {
     search_at: Option<Instant>,
     search_scope: Vec<NodeId>,
     hover: Option<(PaneId, usize)>,
-    /// Hovered breadcrumb segment or Up button.
+    /// Hovered breadcrumb segment.
     bar_hover: Option<(PaneId, BarHot)>,
-    /// The last click navigated via the breadcrumb/Up; its double-click must not hit the new layout.
+    /// The last click navigated via the breadcrumb; its double-click must not hit the new layout.
     swallow_dbl: bool,
     /// Current drag-and-drop target row.
     pub drop: Option<(PaneId, NodeId)>,
@@ -165,8 +165,6 @@ pub enum Hit {
     Crumb { index: usize, target: Option<String> },
     /// Breadcrumb bar outside the clickable segments (click to type a path).
     CrumbBar,
-    /// The Up button on the pinned root row.
-    Up,
     Empty,
     Nothing,
 }
@@ -174,7 +172,6 @@ pub enum Hit {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarHot {
     Crumb(usize),
-    Up,
 }
 
 /// Vertical layout: breadcrumb bar (zoomed or typing a path), column header, pinned root row, scrolling rows.
@@ -234,11 +231,6 @@ pub fn scroll_view_rows(app: &mut App, pane: PaneId) -> usize {
     ((h - scroll_area_top(app, pane)) / m.row).max(1) as usize
 }
 
-/// Width of the Up button at the right end of the pinned root row.
-fn up_button(m: &Metrics, w: i32, y: i32) -> RECT {
-    rc(w - m.row - m.pad, y, m.row + m.pad, m.row)
-}
-
 /// One breadcrumb segment, laid out left to right.
 struct Crumb {
     x: i32,
@@ -248,7 +240,7 @@ struct Crumb {
     target: Option<Option<String>>,
 }
 
-/// The address-field box around the breadcrumb (the path editor covers the same rect).
+/// The breadcrumb's field rect; the path editor covers it while typing.
 fn crumb_box(app: &App, w: i32) -> RECT {
     let m = metrics(app);
     rc(m.pad / 2, scale(2, app.dpi), w - m.pad, m.header - scale(5, app.dpi))
@@ -782,13 +774,6 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
     let row = geo.row_at(y, t.top);
     let Some(&node) = t.rows.get(row) else { return Hit::Empty };
     let Some(n) = t.tree.get(node) else { return Hit::Empty };
-    if row < geo.pin {
-        let w = client_rect(app.panes[&pane].grid()).right;
-        let up = up_button(&m, w, geo.row_y(row, t.top).unwrap_or(0));
-        if x >= up.left && x < up.right {
-            return Hit::Up;
-        }
-    }
     let cx = m.chevron_x(t.scroll_x, n.depth);
     let chevron = n.expandable() && x >= cx && x < cx + m.chev;
     Hit::Row { row, node, chevron }
@@ -839,7 +824,7 @@ fn update_summary(app: &mut App, pane: PaneId) {
 fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let m = metrics(app);
     let pal = app.pal;
-    let (font, glyph_small, glyph_font) = (app.fonts.ui, app.fonts.glyph_small, app.fonts.glyph);
+    let (font, glyph_small) = (app.fonts.ui, app.fonts.glyph_small);
     fill(hdc, r, pal.bg);
     let Some(tid) = active_tid(app, pane) else { return };
     let focus_hwnd = unsafe { GetFocus() };
@@ -853,7 +838,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let cut = app.cut.as_ref().map(|(_, set)| set);
     let bar_hover = app.grid_ui.bar_hover.filter(|h| h.0 == pane).map(|h| h.1);
     let crumbs = if app.tabs.get(&tid).is_some_and(|t| !t.editing_path) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
-    let (cbox, sep, glyph_mid) = (crumb_box(app, r.right), crumb_sep(app), app.fonts.glyph_mid);
+    let (sep, glyph_mid) = (crumb_sep(app), app.fonts.glyph_mid);
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
     let geo = Geo::of(&m, t);
@@ -866,10 +851,6 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     // Breadcrumb (or the path editor's backdrop).
     if geo.crumb > 0 {
         fill(hdc, &rc(0, geo.crumb - 1, w, 1), pal.border);
-        let editing = crumbs.is_empty();
-        if !editing {
-            frame(hdc, &cbox, pal.border, 1);
-        }
         let last = crumbs.len().saturating_sub(1);
         for (i, c) in crumbs.iter().enumerate() {
             let cr = rc(c.x, scale(5, app.dpi), c.w, geo.crumb - scale(11, app.dpi));
@@ -1025,25 +1006,6 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         cx += m.cols[1];
         draw_text(hdc, &n.type_name, &rc(cx + m.pad, y, m.cols[2] - 2 * m.pad, m.row), color, DT_LEFT_V);
         cx += m.cols[2];
-        if pinned {
-            let up = up_button(&m, w, y);
-            let inset = m.pad / 2;
-            let pill = RECT { left: up.left + inset, top: up.top + inset, right: up.right - inset, bottom: up.bottom - inset };
-            if bar_hover == Some(BarHot::Up) {
-                fill(hdc, &pill, pal.hover);
-                frame(hdc, &pill, pal.accent, 1);
-            } else {
-                wash(hdc, &pill, pal.accent, 40);
-            }
-            unsafe {
-                SelectObject(hdc, glyph_font);
-            }
-            draw_text(hdc, glyph::UP, &pill, pal.accent, DT_CENTER_V);
-            unsafe {
-                SelectObject(hdc, font);
-            }
-            continue;
-        }
         let size = size_text(n);
         if !size.is_empty() {
             draw_text(hdc, &size, &rc(cx + m.pad, y, m.cols[3] - 2 * m.pad, m.row), color, DT_RIGHT_V);
@@ -1233,11 +1195,6 @@ fn on_lbutton(app: &mut App, pane: PaneId, x: i32, y: i32) -> bool {
             begin_path_edit(app, pane);
             false
         }
-        Hit::Up => {
-            app.grid_ui.swallow_dbl = true;
-            go_up(app, tid);
-            false
-        }
         Hit::Divider(c) => {
             app.grid_ui.col_drag = Some((pane, c, x, app.settings.columns[c]));
             true
@@ -1350,7 +1307,6 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
     let (row, bar, cell) = match hit(app, pane, x, y) {
         Hit::Row { row, node, .. } => (Some((pane, row)), None, Some((row, node))),
         Hit::Crumb { index, .. } => (None, Some((pane, BarHot::Crumb(index))), None),
-        Hit::Up => (None, Some((pane, BarHot::Up)), None),
         _ => (None, None, None),
     };
     if app.grid_ui.hover != row || app.grid_ui.bar_hover != bar {
@@ -1414,7 +1370,7 @@ fn truncated_cell(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, row: usize, n
         0 => (n.name.clone(), m.text_x(t.scroll_x, n.depth)),
         1 if n.kind != Kind::Drive => (format_time(n.modified), x0 + m.pad),
         2 => (n.type_name.to_string(), x0 + m.pad),
-        3 if row >= geo.pin => (size_text(n), x0 + m.pad),
+        3 => (size_text(n), x0 + m.pad),
         _ => return None,
     };
     let right = (x0 + m.cols[col] - m.pad).min(client_rect(hwnd).right);

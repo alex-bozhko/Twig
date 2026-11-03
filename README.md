@@ -17,7 +17,7 @@ file operations.
 - Double-click a folder to re-root the tab on it; double-click the root to go
   up (a drive root goes back to **This PC**).
 - When zoomed into a folder, the tab shows an open-folder badge and the root row stays
-  pinned at the top with an **Up** button.
+  pinned at the top.
 - A clickable breadcrumb bar sits above the columns on every tab (just the PC
   icon on **This PC**).
 - Click the empty part of the breadcrumb bar (or press `Ctrl+L`) to type or
