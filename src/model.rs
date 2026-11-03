@@ -11,6 +11,11 @@ pub struct NodeId {
     gen: u32,
 }
 
+impl NodeId {
+    /// Placeholder row (a section header) that never resolves to a node.
+    pub const SECTION: NodeId = NodeId { idx: u32::MAX, gen: u32::MAX };
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Drive,

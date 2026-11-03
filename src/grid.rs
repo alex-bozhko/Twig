@@ -615,17 +615,15 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         return;
     }
 
-    // In This PC a line separates the drives from the favorites below them.
-    let divider = if t.root.is_none() {
-        t.tree.roots.iter().copied().find(|&id| t.tree.get(id).is_some_and(|n| n.kind != Kind::Drive))
-    } else {
-        None
-    };
     let last = (t.top + view + 1).min(t.rows.len());
     for i in t.top..last {
         let id = t.rows[i];
-        let Some(n) = t.tree.get(id) else { continue };
         let y = m.header + (i - t.top) as i32 * m.row;
+        if id == NodeId::SECTION {
+            draw_section(hdc, &m, sx, y, w, glyph_small, font, &pal, "Favorites");
+            continue;
+        }
+        let Some(n) = t.tree.get(id) else { continue };
         let row = rc(0, y, w, m.row);
         let bg = if n.selected {
             if focused { pal.sel } else { pal.sel_inactive }
@@ -636,9 +634,6 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         };
         if bg != pal.bg {
             fill(hdc, &row, bg);
-        }
-        if divider == Some(id) && i > 0 {
-            fill(hdc, &rc(0, y, w, scale(1, app.dpi).max(1)), pal.border);
         }
         if drop == Some(id) {
             frame(hdc, &row, pal.accent, 1);
@@ -698,6 +693,25 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
 
 // ---------- Selection helpers ----------
 
+/// Draws a "★ Label ────" section header row.
+#[allow(clippy::too_many_arguments)]
+fn draw_section(hdc: HDC, m: &Metrics, sx: i32, y: i32, w: i32, glyph_small: HFONT, font: HFONT, pal: &crate::theme::Palette, label: &str) {
+    unsafe {
+        SelectObject(hdc, glyph_small);
+    }
+    draw_text(hdc, glyph::STAR, &rc(m.chevron_x(sx, 0), y, m.chev, m.row), pal.accent, DT_CENTER_V);
+    unsafe {
+        SelectObject(hdc, font);
+    }
+    let tx = m.icon_x(sx, 0);
+    let tw = text_width(hdc, font, label);
+    draw_text(hdc, label, &rc(tx, y, tw + m.pad, m.row), pal.text_dim, DT_LEFT_V);
+    let lx = tx + tw + m.pad;
+    if lx < w {
+        fill(hdc, &rc(lx, y + m.row / 2, w - lx - m.pad, 1), pal.border);
+    }
+}
+
 fn select_range(t: &mut Tab, to: NodeId, add: bool) {
     let Some(b) = t.row_of(to) else { return };
     let a = t.anchor.and_then(|a| t.row_of(a)).unwrap_or(b);
@@ -716,6 +730,12 @@ fn move_to(app: &mut App, tid: TabId, row: usize) {
     let (c, s) = (ctrl(), shift());
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
+    let mut row = row;
+    if t.rows.get(row) == Some(&NodeId::SECTION) {
+        // Step over the section header in the direction of travel.
+        let down = t.focus.and_then(|f| t.row_of(f)).map_or(true, |cur| cur < row);
+        row = if down || row == 0 { row + 1 } else { row - 1 };
+    }
     let Some(&id) = t.rows.get(row) else { return };
     if s {
         select_range(t, id, c);

@@ -120,6 +120,13 @@ impl Tab {
         }
         self.dirty = false;
         self.rows = self.tree.visible();
+        if self.root.is_none() {
+            // This PC: a "Favorites" header precedes the first favorite root.
+            let first_fav = self.rows.iter().position(|&id| self.tree.get(id).is_some_and(|n| n.parent.is_none() && n.kind != Kind::Drive));
+            if let Some(i) = first_fav {
+                self.rows.insert(i, NodeId::SECTION);
+            }
+        }
         if self.rows.is_empty() {
             self.focus = None;
             self.anchor = None;
@@ -137,6 +144,8 @@ impl Tab {
             Some(i) => i,
             None => self.focus_row.min(self.rows.len() - 1),
         };
+        // The header is always followed by a favorite.
+        let idx = if self.rows[idx] == NodeId::SECTION { idx + 1 } else { idx };
         self.focus = Some(self.rows[idx]);
         self.focus_row = idx;
         if !self.anchor.is_some_and(|a| self.tree.exists(a)) {
