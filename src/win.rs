@@ -24,6 +24,7 @@ pub const WM_REPAINT: u32 = WM_APP + 15;
 pub const WM_FILTER_CHANGED: u32 = WM_APP + 16;
 pub const WM_FILTER_ESCAPE: u32 = WM_APP + 17;
 pub const WM_FILTER_ENTER: u32 = WM_APP + 18;
+pub const WM_SCAN: u32 = WM_APP + 19;
 
 static MAIN: AtomicIsize = AtomicIsize::new(0);
 

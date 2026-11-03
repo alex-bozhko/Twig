@@ -9,6 +9,7 @@ use crate::fileops::{self, Op, UndoEntry};
 use crate::layout::{Layout, PaneId, Side};
 use crate::loader::{self, Done, Job, TabId};
 use crate::model::{Filtered, Kind, NodeId, SortKey, Tree};
+use crate::scan::{ScanMsg, SCAN_LIMIT};
 use crate::settings::{Favorite, LayoutEntry, Settings, TabEntry};
 use crate::shell;
 use crate::theme::{Fonts, Palette};
@@ -27,6 +28,10 @@ pub const TIMER_WATCH: usize = 2;
 pub const TIMER_HOVER_TAB: usize = 3;
 const STATUS_MS: u32 = 5000;
 const WATCH_DEBOUNCE_MS: u32 = 200;
+
+/// Set when the filter box text changed but WM_FILTER_CHANGED hasn't applied it yet, so
+/// other queued messages (scan batches, listings) don't overwrite what the user just typed.
+pub static FILTER_EDIT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 thread_local! {
     static APP: RefCell<Option<Box<App>>> = const { RefCell::new(None) };
@@ -85,8 +90,33 @@ pub struct Tab {
     pub filter: String,
     /// Filter details for drawing (its `rows` are moved into `rows`).
     pub filtered: Filtered,
+    /// The filter also searches inside collapsed folders (subfolder search).
+    pub deep: bool,
+    /// Background scan feeding subfolder search.
+    pub scan: Option<ScanState>,
     dirty: bool,
     focus_row: usize,
+}
+
+/// Progress of a tab's subfolder-search scan.
+pub struct ScanState {
+    handle: crate::scan::ScanHandle,
+    pub items: usize,
+    pub folders: usize,
+    pub done: bool,
+    /// Stopped at `scan::SCAN_LIMIT` with folders left unsearched.
+    pub truncated: bool,
+    /// Folders that couldn't be listed.
+    pub errors: usize,
+    /// Path key -> node, for folders the scan will list.
+    index: HashMap<String, NodeId>,
+}
+
+impl ScanState {
+    /// Shown as a note above the rows while scanning or after hitting the limit.
+    pub fn needs_note(&self) -> bool {
+        !self.done || self.truncated
+    }
 }
 
 impl Tab {
@@ -110,6 +140,8 @@ impl Tab {
             rows: Vec::new(),
             filter: String::new(),
             filtered: Filtered::default(),
+            deep: false,
+            scan: None,
             dirty: true,
             focus_row: 0,
         }
@@ -129,7 +161,7 @@ impl Tab {
             self.filtered = Filtered::default();
             self.rows = self.tree.visible();
         } else {
-            self.filtered = self.tree.filtered(&self.filter);
+            self.filtered = self.tree.filtered(&self.filter, self.deep);
             self.rows = std::mem::take(&mut self.filtered.rows);
         }
         if self.root.is_none() {
@@ -138,6 +170,9 @@ impl Tab {
             if let Some(i) = first_fav {
                 self.rows.insert(i, NodeId::SECTION);
             }
+        }
+        if self.deep && self.scan.as_ref().is_some_and(|s| s.needs_note()) {
+            self.rows.insert(0, NodeId::SCAN_NOTE);
         }
         if self.rows.is_empty() {
             self.focus = None;
@@ -150,7 +185,7 @@ impl Tab {
             if self.rows.contains(&id) {
                 break;
             }
-            if !self.filter.is_empty() && self.tree.is_shown(id) {
+            if !self.filter.is_empty() && (self.deep || self.tree.is_shown(id)) {
                 // Hidden by the filter: keep the row position instead.
                 f = None;
                 break;
@@ -581,6 +616,8 @@ impl App {
         t.top = 0;
         t.scroll_x = 0;
         t.filter.clear();
+        t.deep = false;
+        t.scan = None;
         t.mark();
         match root {
             None => {
@@ -718,7 +755,8 @@ impl App {
             return;
         }
         n.expanded = true;
-        let need_load = n.children.is_none();
+        // Scanned contents lack exact icons and details: list the folder properly.
+        let need_load = n.children.is_none() || n.scanned;
         t.mark();
         if need_load {
             self.load_node(tid, id);
@@ -804,9 +842,13 @@ impl App {
             loader::submit(self.drives_job(tid));
         }
         let Some(t) = self.tabs.get(&tid) else { return };
+        let deep = t.deep;
         let dirs: Vec<NodeId> = t.tree.loaded_dirs().into_iter().map(|(id, _)| id).collect();
         for id in dirs {
             self.load_node(tid, id);
+        }
+        if deep {
+            self.start_scan(tid);
         }
     }
 
@@ -842,6 +884,9 @@ impl App {
                             let details = loader::detail_items(&entries);
                             let expand_all = n.expand_all;
                             t.tree.merge_children(node, entries);
+                            if let Some(n) = t.tree.get_mut(node).filter(|n| n.expanded) {
+                                n.scanned = false;
+                            }
                             if !details.is_empty() {
                                 loader::submit(Job::Details { tab, node, path, items: details });
                             }
@@ -1079,10 +1124,142 @@ impl App {
     }
 
     pub fn sync_search_edit(&mut self) {
-        let text = self.active_tab().and_then(|t| self.tabs.get(&t)).map(|t| t.filter.clone()).unwrap_or_default();
+        let tab = self.active_tab().and_then(|t| self.tabs.get(&t));
+        let text = tab.map(|t| t.filter.clone()).unwrap_or_default();
         self.chrome.filter_active = !text.is_empty();
-        if get_text(self.search_edit) != text {
+        self.chrome.deep_active = tab.is_some_and(|t| t.deep);
+        self.chrome.deep_available = tab.is_some_and(|t| t.root.is_some() && t.error.is_none());
+        if !FILTER_EDIT_PENDING.load(std::sync::atomic::Ordering::Relaxed) && get_text(self.search_edit) != text {
             set_text(self.search_edit, &text);
+        }
+    }
+
+    /// Clears the filter and turns subfolder search off (Esc, the × button).
+    pub fn clear_filter(&mut self, tid: TabId) {
+        self.stop_deep(tid);
+        self.set_filter(tid, "");
+        self.reveal_focus(tid);
+        self.after_change(tid);
+    }
+
+    /// Turns subfolder search on or off for the tab (not available in This PC).
+    pub fn toggle_deep(&mut self, tid: TabId) {
+        let Some(t) = self.tabs.get_mut(&tid) else { return };
+        if t.deep {
+            self.stop_deep(tid);
+            self.reveal_focus(tid);
+        } else if t.root.is_none() || t.error.is_some() {
+            self.set_status("Subfolder search works inside a folder or drive \u{2014} open one first".into());
+            return;
+        } else {
+            t.deep = true;
+            self.start_scan(tid);
+        }
+        self.after_change(tid);
+    }
+
+    /// Starts (or restarts) the background scan behind subfolder search.
+    fn start_scan(&mut self, tid: TabId) {
+        let Some(t) = self.tabs.get_mut(&tid) else { return };
+        let Some(root) = t.root.clone() else { return };
+        t.scan = Some(ScanState {
+            handle: crate::scan::start(tid, root),
+            items: 0,
+            folders: 0,
+            done: false,
+            truncated: false,
+            errors: 0,
+            index: HashMap::new(),
+        });
+        t.mark();
+    }
+
+    /// Turns subfolder search off: stops the scan, keeps the focused item visible by opening its
+    /// folders, and forgets scanned contents of collapsed folders.
+    fn stop_deep(&mut self, tid: TabId) {
+        let Some(t) = self.tabs.get_mut(&tid) else { return };
+        if !t.deep {
+            return;
+        }
+        t.deep = false;
+        t.scan = None;
+        let mut closed = Vec::new();
+        let mut cur = t.focus.and_then(|f| t.tree.get(f)).and_then(|n| n.parent);
+        while let Some(id) = cur {
+            let Some(n) = t.tree.get(id) else { break };
+            if !n.expanded {
+                closed.push(id);
+            }
+            cur = n.parent;
+        }
+        for id in closed {
+            self.expand(tid, id);
+        }
+        let Some(t) = self.tabs.get_mut(&tid) else { return };
+        t.tree.drop_scanned();
+        if !t.anchor.is_some_and(|a| t.tree.exists(a)) {
+            t.anchor = t.focus;
+        }
+        t.mark();
+    }
+
+    fn reveal_focus(&mut self, tid: TabId) {
+        let Some(t) = self.tabs.get_mut(&tid) else { return };
+        if let Some(r) = t.focus.and_then(|f| t.row_of(f)) {
+            self.scroll_into_view(tid, r);
+        }
+    }
+
+    /// Merges subfolder-search scan results (WM_SCAN).
+    pub fn on_scan(&mut self) {
+        let mut touched = HashSet::new();
+        for msg in crate::scan::take() {
+            match msg {
+                ScanMsg::Batch { tab, id, dirs, items, folders } => {
+                    let Some(t) = self.tabs.get_mut(&tab) else { continue };
+                    let Some(s) = t.scan.as_mut().filter(|s| s.handle.id == id) else { continue };
+                    s.items = items;
+                    s.folders = folders;
+                    for (dir, entries) in dirs {
+                        let key = path_key(&dir);
+                        let indexed = s.index.remove(&key).filter(|&n| t.tree.get(n).is_some_and(|n| path_key(&n.path) == key));
+                        let Some(node) = indexed.or_else(|| t.tree.find_path(&dir)) else { continue };
+                        let Some(n) = t.tree.get(node) else { continue };
+                        if !n.kind.is_fs_dir() {
+                            continue;
+                        }
+                        // Folders listed normally keep their (richer) listing.
+                        if n.children.is_none() || n.scanned {
+                            t.tree.merge_children(node, entries);
+                            if let Some(n) = t.tree.get_mut(node) {
+                                n.scanned = true;
+                            }
+                        }
+                        for &c in t.tree.children(node) {
+                            if let Some(cn) = t.tree.get(c).filter(|cn| cn.kind == Kind::Dir) {
+                                s.index.insert(path_key(&cn.path), c);
+                            }
+                        }
+                    }
+                    touched.insert(tab);
+                }
+                ScanMsg::Done { tab, id, items, truncated, errors } => {
+                    let Some(t) = self.tabs.get_mut(&tab) else { continue };
+                    let Some(s) = t.scan.as_mut().filter(|s| s.handle.id == id) else { continue };
+                    s.items = items;
+                    s.done = true;
+                    s.truncated = truncated;
+                    s.errors = errors;
+                    s.index = HashMap::new();
+                    touched.insert(tab);
+                }
+            }
+        }
+        for tab in touched {
+            if let Some(t) = self.tabs.get_mut(&tab) {
+                t.mark();
+            }
+            self.after_change(tab);
         }
     }
 
@@ -1311,12 +1488,34 @@ impl App {
         invalidate(self.hwnd);
     }
 
-    /// Persistent status line for a filtered active tab.
-    pub fn filter_status(&self) -> Option<String> {
-        let t = self.active_tab().and_then(|t| self.tabs.get(&t)).filter(|t| !t.filter.is_empty())?;
+    /// Persistent status line for a filtered active tab (or one with subfolder search on), and
+    /// whether it carries a warning (the scan hit its limit).
+    pub fn filter_status(&self) -> Option<(String, bool)> {
+        let t = self.active_tab().and_then(|t| self.tabs.get(&t)).filter(|t| !t.filter.is_empty() || t.deep)?;
         let f = &t.filtered;
-        let hidden: usize = f.hidden.iter().map(|h| h.1).sum();
-        Some(format!("Filter \u{201C}{}\u{201D}: {} of {} items match, {} hidden \u{2014} Esc in the filter box clears it", t.filter, f.matched, f.total, hidden))
+        let mut s = if t.filter.is_empty() {
+            "Subfolder search on \u{2014} type in the filter box to search all subfolders".to_string()
+        } else {
+            let hidden: usize = f.hidden.iter().map(|h| h.1).sum();
+            format!("Filter \u{201C}{}\u{201D}: {} of {} items match, {} hidden", t.filter, format_count(f.matched), format_count(f.total), format_count(hidden))
+        };
+        let mut warn = false;
+        if let Some(sc) = &t.scan {
+            if !sc.done {
+                s += &format!(" \u{00B7} searching subfolders\u{2026} {} items in {} folders so far", format_count(sc.items), format_count(sc.folders));
+            } else if !sc.truncated {
+                s += &format!(" \u{00B7} all {} subfolders searched", format_count(sc.folders.saturating_sub(1)));
+            }
+            if sc.truncated {
+                warn = true;
+                s += &format!(" \u{00B7} \u{26A0} STOPPED at the {}-item limit: items beyond it were NOT searched", format_count(SCAN_LIMIT));
+            }
+            if sc.errors > 0 {
+                s += &format!(" \u{00B7} {} folder(s) couldn't be read", format_count(sc.errors));
+            }
+        }
+        s += " \u{2014} Esc in the filter box clears it";
+        Some((s, warn))
     }
 
     // ---------- Clipboard ----------

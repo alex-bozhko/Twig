@@ -1,6 +1,6 @@
 //! Tree model for one tab: a generational arena of nodes with sorting, merging and flattening.
 
-use crate::util::{find_ci, natural_cmp, normalize_path, path_key};
+use crate::util::{natural_cmp, normalize_path, path_key, Matcher};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -15,6 +15,9 @@ impl NodeId {
     /// Placeholder row (a section header) that never resolves to a node.
     pub const SECTION: NodeId = NodeId { idx: u32::MAX, gen: u32::MAX };
 
+    /// Placeholder row with the subfolder-search progress or limit warning.
+    pub const SCAN_NOTE: NodeId = NodeId { idx: u32::MAX - 2, gen: 0 };
+
     /// Placeholder row standing for the `i`-th group of items hidden by a filter.
     pub fn hidden_marker(i: u32) -> NodeId {
         NodeId { idx: u32::MAX - 1, gen: i }
@@ -24,9 +27,9 @@ impl NodeId {
         (self.idx == u32::MAX - 1).then_some(self.gen as usize)
     }
 
-    /// A row that is not a node (section header or hidden-items marker).
+    /// A row that is not a node (section header, hidden-items marker or scan note).
     pub fn is_placeholder(self) -> bool {
-        self.idx >= u32::MAX - 1
+        self.idx >= u32::MAX - 2
     }
 }
 
@@ -39,6 +42,8 @@ pub struct Filtered {
     pub context: HashSet<NodeId>,
     /// (depth, count) for each hidden marker, indexed by `NodeId::as_hidden_marker`.
     pub hidden: Vec<(u16, usize)>,
+    /// Collapsed folders shown open because they contain matches (subfolder search).
+    pub opened: HashSet<NodeId>,
     pub matched: usize,
     pub total: usize,
 }
@@ -143,6 +148,8 @@ pub struct Node {
     pub selected: bool,
     /// Expand all descendants as they load.
     pub expand_all: bool,
+    /// The children came from a subfolder-search scan (no exact icons; dropped when it ends).
+    pub scanned: bool,
 }
 
 pub const ATTR_HIDDEN: u32 = 0x2;
@@ -169,6 +176,7 @@ impl Node {
             depth,
             selected: false,
             expand_all: false,
+            scanned: false,
         }
     }
     pub fn is_hidden(&self) -> bool {
@@ -501,6 +509,7 @@ impl Tree {
                         depth: base_depth + 1 + i as u16,
                         selected: false,
                         expand_all: false,
+                        scanned: false,
                     };
                     let id = self.alloc(node);
                     self.get_mut(parent).unwrap().children.get_or_insert_with(Vec::new).push(id);
@@ -534,6 +543,7 @@ impl Tree {
                     depth: base_depth + 1 + i as u16,
                     selected: false,
                     expand_all: false,
+                    scanned: false,
                 };
                 let id = self.alloc(node);
                 self.get_mut(parent).unwrap().children.get_or_insert_with(Vec::new).push(id);
@@ -571,17 +581,33 @@ impl Tree {
         out
     }
 
-    /// Visible rows narrowed to names containing `query` (case-insensitive). Only rows that are
-    /// already visible are searched; collapsed folders are not looked into. Ancestors of matches
-    /// stay as context, as do expanded roots (so a folder tab keeps its header row).
-    pub fn filtered(&self, query: &str) -> Filtered {
-        let visible = self.visible();
-        let mut f = Filtered { total: visible.len(), ..Default::default() };
-        let mut kept = HashSet::new();
-        // Reverse pre-order visits children before their parents.
-        for &id in visible.iter().rev() {
+    /// Every loaded node in display order, including the contents of collapsed folders.
+    pub fn all_loaded(&self) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack: Vec<NodeId> = self.roots.iter().rev().copied().collect();
+        while let Some(id) = stack.pop() {
             let Some(n) = self.get(id) else { continue };
-            let hit = find_ci(&n.name, query).is_some();
+            out.push(id);
+            if let Some(ch) = &n.children {
+                stack.extend(ch.iter().rev().copied());
+            }
+        }
+        out
+    }
+
+    /// Visible rows narrowed to names containing `query` (case-insensitive). Ancestors of matches
+    /// stay as context, as do expanded roots (so a folder tab keeps its header row).
+    /// Without `deep` only rows that are already visible are searched; with it every loaded node is,
+    /// and collapsed folders holding matches are shown open (listed in `opened`).
+    pub fn filtered(&self, query: &str, deep: bool) -> Filtered {
+        let order = if deep { self.all_loaded() } else { self.visible() };
+        let mut f = Filtered { total: order.len(), ..Default::default() };
+        let mut kept = HashSet::new();
+        let matcher = Matcher::new(query);
+        // Reverse pre-order visits children before their parents.
+        for &id in order.iter().rev() {
+            let Some(n) = self.get(id) else { continue };
+            let hit = matcher.is_match(&n.name);
             let open_root = n.parent.is_none() && n.expanded;
             if hit || open_root || kept.contains(&id) {
                 if hit {
@@ -595,11 +621,11 @@ impl Tree {
                 }
             }
         }
-        self.emit_filtered(&self.roots, 0, &kept, &mut f);
+        self.emit_filtered(&self.roots, 0, &kept, deep, &mut f);
         f
     }
 
-    fn emit_filtered(&self, ids: &[NodeId], depth: u16, kept: &HashSet<NodeId>, f: &mut Filtered) {
+    fn emit_filtered(&self, ids: &[NodeId], depth: u16, kept: &HashSet<NodeId>, deep: bool, f: &mut Filtered) {
         let mut hidden = 0;
         for &id in ids {
             let Some(n) = self.get(id) else { continue };
@@ -608,10 +634,13 @@ impl Tree {
                 continue;
             }
             f.rows.push(id);
-            if n.expanded {
-                if let Some(ch) = &n.children {
-                    self.emit_filtered(ch, depth + 1, kept, f);
+            let Some(ch) = &n.children else { continue };
+            let open = n.expanded || (deep && ch.iter().any(|c| kept.contains(c)));
+            if open {
+                if !n.expanded {
+                    f.opened.insert(id);
                 }
+                self.emit_filtered(ch, depth + 1, kept, deep, f);
             }
         }
         if hidden > 0 {
@@ -751,18 +780,42 @@ impl Tree {
         out
     }
 
-    /// Loaded file-system directories (for change-notification refreshes).
+    /// Loaded file-system directories (for change-notification refreshes). Folders filled by a
+    /// subfolder-search scan are left out (they are rescanned instead).
     pub fn loaded_dirs(&self) -> Vec<(NodeId, String)> {
         let mut out = Vec::new();
         let mut stack: Vec<NodeId> = self.roots.clone();
         while let Some(id) = stack.pop() {
             let Some(n) = self.get(id) else { continue };
             if n.kind.is_fs_dir() && n.children.is_some() {
-                out.push((id, n.path.clone()));
+                if !n.scanned {
+                    out.push((id, n.path.clone()));
+                }
                 stack.extend(n.children.as_ref().unwrap().iter().copied());
             }
         }
         out
+    }
+
+    /// Forgets the contents of collapsed folders that were filled by a subfolder-search scan,
+    /// so they load normally (with exact icons and details) when next expanded.
+    pub fn drop_scanned(&mut self) {
+        let mut stack: Vec<NodeId> = self.roots.clone();
+        while let Some(id) = stack.pop() {
+            let Some(n) = self.get(id) else { continue };
+            if n.scanned && !n.expanded {
+                for c in n.children.clone().unwrap_or_default() {
+                    self.free_subtree(c);
+                }
+                let n = self.get_mut(id).unwrap();
+                n.children = None;
+                n.scanned = false;
+                n.loading = false;
+                n.expand_all = false;
+            } else if let Some(ch) = &n.children {
+                stack.extend(ch.iter().copied());
+            }
+        }
     }
 }
 
@@ -983,7 +1036,7 @@ mod tests {
     #[test]
     fn filter_keeps_matches_and_their_ancestors() {
         let (t, root) = filter_tree();
-        let f = t.filtered("REPORT");
+        let f = t.filtered("REPORT", false);
         // pics is collapsed, so its report.png is not searched; old likewise.
         assert_eq!(labels(&t, &f), vec!["r", "docs", "report.txt", "~2:2", "~1:3"]);
         assert_eq!((f.matched, f.total), (1, 8));
@@ -995,7 +1048,7 @@ mod tests {
     #[test]
     fn filter_matching_folder_is_not_context() {
         let (t, _) = filter_tree();
-        let f = t.filtered("doc");
+        let f = t.filtered("doc", false);
         assert_eq!(labels(&t, &f), vec!["r", "docs", "~2:3", "~1:3"]);
         assert!(!f.context.contains(&by_name(&t, "docs")));
     }
@@ -1004,7 +1057,7 @@ mod tests {
     fn filter_without_matches_leaves_open_root_and_marker() {
         let (mut t, _) = filter_tree();
         t.add_root(entry("zz", Kind::Dir, 0));
-        let f = t.filtered("nothing");
+        let f = t.filtered("nothing", false);
         assert_eq!(labels(&t, &f), vec!["r", "~1:4", "~0:1"]);
         assert_eq!(f.matched, 0);
     }
@@ -1027,7 +1080,7 @@ mod tests {
         assert_eq!(pick(&scope, Some(readme), "p").as_deref(), Some("pics"));
         assert_eq!(pick(&scope, Some(readme), "t").as_deref(), Some("todo.txt"));
         // Filtered: hidden rows can't be jumped to.
-        let f = t.filtered(".txt");
+        let f = t.filtered(".txt", false);
         let scope = t.search_scope(Some(readme), &f.rows);
         assert_eq!(names(&t, &scope), vec!["docs", "readme.txt", "todo.txt"]);
         assert_eq!(pick(&scope, Some(readme), "p"), None);
@@ -1035,5 +1088,39 @@ mod tests {
         assert_eq!(names(&t, &t.search_scope(Some(docs), &f.rows)), vec!["report.txt"]);
         // No focus: shown roots.
         assert_eq!(names(&t, &t.search_scope(None, &f.rows)), vec!["r"]);
+    }
+
+    #[test]
+    fn deep_filter_looks_into_collapsed_folders() {
+        let (t, _) = filter_tree();
+        let f = t.filtered("REPORT", true);
+        assert_eq!(labels(&t, &f), vec!["r", "docs", "old", "report_old.txt", "report.txt", "~2:1", "pics", "report.png", "~1:2"]);
+        assert_eq!((f.matched, f.total), (3, 10));
+        let (old, pics) = (by_name(&t, "old"), t.children(t.roots[0])[1]);
+        assert_eq!(f.opened, HashSet::from([old, pics]));
+        assert!(f.context.contains(&old) && f.context.contains(&pics));
+        // Folders without matches stay closed and are not counted as opened.
+        let f = t.filtered("notes", true);
+        assert_eq!(labels(&t, &f), vec!["r", "docs", "notes.md", "~2:2", "~1:3"]);
+        assert!(f.opened.is_empty());
+    }
+
+    #[test]
+    fn drop_scanned_forgets_collapsed_scan_results() {
+        let (mut t, root) = filter_tree();
+        let pics = t.children(root)[1];
+        let old = by_name(&t, "old");
+        let png = t.children(pics)[0];
+        t.get_mut(pics).unwrap().scanned = true;
+        t.get_mut(old).unwrap().scanned = true;
+        t.get_mut(old).unwrap().expanded = true;
+        assert!(t.loaded_dirs().iter().all(|&(id, _)| id != pics && id != old));
+        t.drop_scanned();
+        let p = t.get(pics).unwrap();
+        assert!(p.children.is_none() && !p.scanned && p.has_children == Some(true));
+        assert!(t.get(png).is_none());
+        // An expanded scanned folder keeps its contents.
+        assert_eq!(t.children(old).len(), 1);
+        assert!(NodeId::SCAN_NOTE.is_placeholder() && NodeId::SCAN_NOTE.as_hidden_marker().is_none());
     }
 }

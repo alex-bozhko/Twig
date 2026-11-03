@@ -8,6 +8,7 @@ mod layout;
 mod loader;
 mod mainwin;
 mod model;
+mod scan;
 mod settings;
 mod shell;
 mod theme;

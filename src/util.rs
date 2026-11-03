@@ -84,6 +84,19 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Count with thousands separators: 250000 -> "250,000".
+pub fn format_count(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Lower-cased path with trailing separators removed (except for drive roots like `C:\`).
 pub fn path_key(path: &str) -> String {
     normalize_path(path).to_lowercase()
@@ -217,6 +230,30 @@ pub fn find_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
         .map(|w| (w[0].1, w[w.len() - 1].2))
 }
 
+/// Case-insensitive substring test that is cheap to repeat over many names.
+pub struct Matcher {
+    lower: String,
+    ascii: bool,
+}
+
+impl Matcher {
+    pub fn new(needle: &str) -> Matcher {
+        let lower: String = needle.chars().flat_map(char::to_lowercase).collect();
+        Matcher { ascii: lower.is_ascii(), lower }
+    }
+
+    pub fn is_match(&self, hay: &str) -> bool {
+        let n = self.lower.as_bytes();
+        if n.is_empty() {
+            return false;
+        }
+        if self.ascii && hay.is_ascii() {
+            return hay.len() >= n.len() && hay.as_bytes().windows(n.len()).any(|w| w.eq_ignore_ascii_case(n));
+        }
+        find_ci(hay, &self.lower).is_some()
+    }
+}
+
 /// Type-to-search: find the index of the next item matching `buffer`.
 /// `names` is the search scope, `current` the index of the focused item within it.
 /// Repeating a single character cycles through items starting with that character.
@@ -275,6 +312,11 @@ mod tests {
         assert_eq!(format_size(1536 * 1024), "1.50 MB");
         assert_eq!(format_size(150 * 1024 * 1024 * 1024), "150 GB");
         assert_eq!(format_size(u64::MAX), "16384 PB");
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1000), "1,000");
+        assert_eq!(format_count(250_000), "250,000");
+        assert_eq!(format_count(1_234_567), "1,234,567");
     }
 
     #[test]
@@ -336,5 +378,8 @@ mod tests {
         assert_eq!(find_ci("ÄrgerÖl", "rgerö"), Some((2, 8)));
         assert_eq!(find_ci("abc", "abcd"), None);
         assert_eq!(find_ci("abc", ""), None);
+        let m = Matcher::new("PORT");
+        assert!(m.is_match("report.txt") && !m.is_match("por") && !Matcher::new("").is_match("a"));
+        assert!(Matcher::new("rgerö").is_match("ÄrgerÖl") && Matcher::new("txt").is_match("Ärger.TXT"));
     }
 }

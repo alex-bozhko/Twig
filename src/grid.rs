@@ -623,6 +623,19 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
             draw_section(hdc, &m, sx, y, w, glyph_small, font, &pal, "Favorites");
             continue;
         }
+        if id == NodeId::SCAN_NOTE {
+            if let Some(sc) = &t.scan {
+                let (label, color) = if sc.truncated {
+                    let limit = format_count(crate::scan::SCAN_LIMIT);
+                    (format!("\u{26A0} Subfolder search STOPPED at the {limit}-item limit \u{2014} items beyond it were NOT searched"), pal.error)
+                } else {
+                    (format!("Searching subfolders\u{2026} {} items in {} folders so far", format_count(sc.items), format_count(sc.folders)), pal.text_dim)
+                };
+                let tx = m.text_x(sx, 0);
+                draw_text(hdc, &label, &rc(tx, y, (w - tx - m.pad).max(0), m.row), color, DT_LEFT_V);
+            }
+            continue;
+        }
         if let Some(&(depth, count)) = id.as_hidden_marker().and_then(|k| t.filtered.hidden.get(k)) {
             let tx = m.text_x(sx, depth);
             let label = if count == 1 { "1 item hidden by the filter".to_string() } else { format!("{count} items hidden by the filter") };
@@ -656,7 +669,8 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
             IntersectClipRect(hdc, -sx, y, -sx + m.cols[0] - m.pad / 2, y + m.row);
         }
         if n.expandable() {
-            let g = if n.expanded { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT };
+            let open = n.expanded || t.filtered.opened.contains(&id);
+            let g = if open { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT };
             unsafe {
                 SelectObject(hdc, glyph_small);
             }
@@ -1277,7 +1291,7 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
                 }
             }
         }
-        VK_ESCAPE if !t.filter.is_empty() => app.set_filter(tid, ""),
+        VK_ESCAPE if !t.filter.is_empty() || t.deep => app.clear_filter(tid),
         VK_RETURN | VK_F2 => begin_rename(app, pane, focus?),
         VK_F5 => app.refresh_tab(tid),
         VK_DELETE => {
