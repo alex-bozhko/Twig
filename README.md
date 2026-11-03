@@ -15,7 +15,7 @@ file operations.
 - Virtualized, custom-drawn tree grid with per-folder expand chevrons; folders
   load in the background and update live as files change on disk.
 - Double-click a folder to re-root the tab on it; double-click the root to go
-  up (a drive root goes back to **This PC**). `Backspace` goes up.
+  up (a drive root goes back to **This PC**).
 - Folder context menu adds **Expand all** / **Collapse all**.
 - Click a column header to sort, drag header edges to resize.
 - Type-to-search jumps to the next matching item in the current folder.
@@ -37,7 +37,8 @@ file operations.
 
 - Drag and drop with Windows semantics (`Ctrl` copy, `Shift` move).
 - `Ctrl+C` / `Ctrl+X` / `Ctrl+V` clipboard (interoperates with Explorer).
-- `Delete` recycles, `Shift+Delete` deletes permanently.
+- `Delete` recycles, `Shift+Delete` deletes permanently; both ask for
+  confirmation first.
 - `F2` / `Enter` rename, `Alt+Enter` properties.
 - `Ctrl+Z` undo of copy / move / rename / recycle / new item.
 - Full Windows Shell context menu (`Shift` for extended verbs).

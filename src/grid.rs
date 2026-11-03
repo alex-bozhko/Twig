@@ -11,7 +11,7 @@ use crate::theme::glyph;
 use crate::util::*;
 use crate::win::*;
 use std::time::Instant;
-use windows::core::{w, PCWSTR};
+use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Globalization::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -129,6 +129,7 @@ enum Deferred {
     Explorer(String, bool),
     Properties(String),
     Drag(Vec<String>, DROPEFFECT),
+    Recycle(TabId, Vec<String>, String),
 }
 
 fn active_tid(app: &App, pane: PaneId) -> Option<TabId> {
@@ -187,6 +188,17 @@ fn run_deferred(hwnd: HWND, d: Option<Deferred>) {
             unsafe {
                 let _ = ReleaseCapture();
                 let _ = SHDoDragDrop(hwnd, &obj, None, effects);
+            }
+        }
+        Deferred::Recycle(tid, items, msg) => {
+            let prompt = match items.as_slice() {
+                [one] => format!("Move \"{}\" to the Recycle Bin?", file_name(one)),
+                _ => format!("Move these {} items to the Recycle Bin?", items.len()),
+            };
+            let owner = unsafe { GetAncestor(hwnd, GA_ROOT) };
+            let answer = unsafe { MessageBoxW(owner, &HSTRING::from(prompt), w!("Delete"), MB_YESNO | MB_ICONWARNING) };
+            if answer == IDYES {
+                with_app(|app| app.run_op(tid, Op::Delete { items, recycle: true }, Some(msg)));
             }
         }
     }
@@ -760,23 +772,29 @@ fn copy_nodes(app: &mut App, tid: TabId, nodes: &[NodeId], cut: bool) {
     app.set_clipboard(&paths, cut);
 }
 
-fn delete_nodes(app: &mut App, tid: TabId, nodes: &[NodeId], recycle: bool) {
-    let Some(t) = app.tabs.get(&tid) else { return };
+/// Recycling is confirmed by a prompt shown outside the app borrow; permanent deletion is
+/// confirmed by the shell's own dialog.
+fn delete_nodes(app: &mut App, tid: TabId, nodes: &[NodeId], recycle: bool) -> Option<Deferred> {
+    let t = app.tabs.get(&tid)?;
     if nodes.is_empty() {
-        return;
+        return None;
     }
     if any_virtual(t, nodes) {
         app.set_status_error("Items inside an archive can't be deleted".into());
-        return;
+        return None;
     }
     if nodes.iter().any(|&id| t.tree.get(id).is_some_and(|n| n.kind == Kind::Drive)) {
         app.set_status_error("Drives can't be deleted".into());
-        return;
+        return None;
     }
     let items = paths_of(t, nodes);
     let n = items.len();
     let msg = if n == 1 { format!("Deleted {}", file_name(&items[0])) } else { format!("Deleted {n} items") };
+    if recycle {
+        return Some(Deferred::Recycle(tid, items, msg));
+    }
     app.run_op(tid, Op::Delete { items, recycle }, Some(msg));
+    None
 }
 
 fn paste(app: &mut App, tid: TabId, node: Option<NodeId>) {
@@ -1121,7 +1139,7 @@ fn handle_menu(app: &mut App, pane: PaneId, prep: MenuPrep, res: MenuResult) -> 
         },
         MenuResult::Verb(v) => match v.as_str() {
             "rename" => begin_rename(app, pane, nodes[0]),
-            "delete" => delete_nodes(app, tid, &nodes, !shift()),
+            "delete" => return delete_nodes(app, tid, &nodes, !shift()),
             "cut" => copy_nodes(app, tid, &nodes, true),
             "copy" => copy_nodes(app, tid, &nodes, false),
             "paste" => paste(app, tid, nodes.first().copied()),
@@ -1185,11 +1203,10 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
             }
         }
         VK_RETURN | VK_F2 => begin_rename(app, pane, focus?),
-        VK_BACK => app.go_up(tid),
         VK_F5 => app.refresh_tab(tid),
         VK_DELETE => {
             let nodes = t.selected();
-            delete_nodes(app, tid, &nodes, !s);
+            return delete_nodes(app, tid, &nodes, !s);
         }
         VK_SPACE if c => {
             let id = focus?;
