@@ -766,6 +766,8 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let Some(tid) = active_tid(app, pane) else { return };
     let focus_hwnd = unsafe { GetFocus() };
     let focused = focus_hwnd == hwnd || unsafe { IsChild(hwnd, focus_hwnd).as_bool() };
+    // Selection stays accent-colored in the active pane even while the toolbar has focus.
+    let sel_color = if pane == app.active_pane && unsafe { GetForegroundWindow() } == app.hwnd { pal.sel } else { pal.sel_inactive };
     let hover = app.grid_ui.hover.filter(|h| h.0 == pane).map(|h| h.1);
     let drop = app.grid_ui.drop.filter(|d| d.0 == pane).map(|d| d.1);
     let renaming = app.grid_ui.rename.as_ref().filter(|rn| rn.tab == tid).map(|rn| rn.node);
@@ -863,7 +865,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         let Some(n) = t.tree.get(id) else { continue };
         let row = rc(0, y, w, m.row);
         let bg = if n.selected {
-            if focused { pal.sel } else { pal.sel_inactive }
+            sel_color
         } else if drop == Some(id) || hover == Some(i) {
             pal.hover
         } else {

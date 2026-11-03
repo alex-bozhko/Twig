@@ -1222,6 +1222,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(GetStockObject(DC_BRUSH).0 as isize);
         }
         WM_ACTIVATE => {
+            // The active pane's selection color depends on whether the window is in the foreground.
+            if let Some(Some(g)) = with_app(|app| app.panes.get(&app.active_pane).map(|p| p.grid())) {
+                invalidate(g);
+            }
             if wp.0 & 0xFFFF != 0 {
                 // Re-activated: restore the focus that was inside the window.
                 let target = with_app(|app| {

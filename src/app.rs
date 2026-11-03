@@ -479,6 +479,11 @@ impl App {
         }
         p.active = index.min(p.tabs.len() - 1);
         let grid = p.grid();
+        if self.active_pane != pane {
+            for p in self.panes.values() {
+                invalidate(p.grid());
+            }
+        }
         self.active_pane = pane;
         crate::grid::end_rename(self, false);
         crate::grid::end_path_edit(self);

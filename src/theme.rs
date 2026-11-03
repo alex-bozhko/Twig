@@ -38,7 +38,7 @@ impl Palette {
                 text: rgb(0xF2F2F2),
                 text_dim: rgb(0x9A9A9A),
                 text_soft: rgb(0xD0D0D0),
-                sel: rgb(0x4C4C4C),
+                sel: rgb(0x264F78),
                 sel_inactive: rgb(0x3A3A3A),
                 hover: rgb(0x2D2D2D),
                 accent: rgb(0x4CC2FF),
