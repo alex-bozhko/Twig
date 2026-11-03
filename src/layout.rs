@@ -72,6 +72,8 @@ impl Layout {
         self.split_inner(target, new, horizontal, after)
     }
 
+    /// The target leaf is always replaced in place by a nested split, so splitting (and later
+    /// closing) a pane only redistributes space within the target's own area.
     fn split_inner(&mut self, target: PaneId, new: PaneId, horizontal: bool, after: bool) -> bool {
         match self {
             Layout::Leaf(p) if *p == target => {
@@ -84,24 +86,12 @@ impl Layout {
                 true
             }
             Layout::Leaf(_) => false,
-            Layout::Split { horizontal: h, children, weights } => {
-                // Same orientation: insert as a sibling, halving the target's share.
-                if *h == horizontal {
-                    if let Some(i) = children.iter().position(|c| *c == Layout::Leaf(target)) {
-                        let half = weights[i] / 2.0;
-                        weights[i] = half;
-                        let at = if after { i + 1 } else { i };
-                        children.insert(at, Layout::Leaf(new));
-                        weights.insert(at, half);
-                        return true;
-                    }
-                }
-                children.iter_mut().any(|c| c.split_inner(target, new, horizontal, after))
-            }
+            Layout::Split { children, .. } => children.iter_mut().any(|c| c.split_inner(target, new, horizontal, after)),
         }
     }
 
-    /// Removes a pane; collapses single-child splits and merges same-orientation nesting.
+    /// Removes a pane and collapses single-child splits, so the pane's sibling group takes
+    /// over the freed space without affecting the rest of the layout.
     /// Returns false if the pane is the last one (the root leaf is never removed).
     pub fn remove(&mut self, pane: PaneId) -> bool {
         if let Layout::Leaf(_) = self {
@@ -125,28 +115,9 @@ impl Layout {
     }
 
     fn normalize(&mut self) {
-        if let Layout::Split { horizontal, children, weights } = self {
+        if let Layout::Split { children, .. } = self {
             for c in children.iter_mut() {
                 c.normalize();
-            }
-            // Flatten children that are splits with the same orientation.
-            let mut i = 0;
-            while i < children.len() {
-                let flatten = matches!(&children[i], Layout::Split { horizontal: h, .. } if *h == *horizontal);
-                if flatten {
-                    if let Layout::Split { children: sub, weights: sw, .. } = children.remove(i) {
-                        let w = weights.remove(i);
-                        let total: f64 = sw.iter().sum::<f64>().max(f64::EPSILON);
-                        let n = sub.len();
-                        for (k, (c, cw)) in sub.into_iter().zip(sw).enumerate() {
-                            children.insert(i + k, c);
-                            weights.insert(i + k, w * cw / total);
-                        }
-                        i += n;
-                        continue;
-                    }
-                }
-                i += 1;
             }
             if children.len() == 1 {
                 *self = children.remove(0);
@@ -255,13 +226,29 @@ mod tests {
         assert!(l.split(1, 2, Side::Right));
         assert!(l.split(2, 3, Side::Right));
         assert_eq!(l.panes(), vec![1, 2, 3]);
-        // Same orientation inserts as sibling instead of nesting.
-        assert!(matches!(&l, Layout::Split { children, .. } if children.len() == 3));
+        // Splitting nests in place of the target, so only pane 2's area is divided.
+        assert!(matches!(&l, Layout::Split { children, .. } if children.len() == 2));
         let (rects, sps) = arrange(&l, 404, 100);
-        assert_eq!(rects[0].1, Rect::new(0, 0, 198, 100));
-        assert_eq!(rects[1].1.w + rects[2].1.w, 198);
+        assert_eq!(rects[0].1, Rect::new(0, 0, 200, 100));
+        assert_eq!(rects[1].1.w + rects[2].1.w, 196);
         assert_eq!(sps.len(), 2);
         assert_eq!(rects.iter().map(|r| r.1.w).sum::<i32>() + 8, 404);
+    }
+
+    #[test]
+    fn split_then_close_restores_other_panes() {
+        let mut l = Layout::Leaf(1);
+        l.split(1, 2, Side::Right);
+        let (_, sps) = arrange(&l, 404, 100);
+        l.drag_splitter(&sps[0], 150, 50);
+        let before = l.clone();
+        for side in [Side::Right, Side::Left, Side::Top, Side::Bottom] {
+            l.split(1, 3, side);
+            let (rects, _) = arrange(&l, 404, 100);
+            assert_eq!(rects.iter().find(|r| r.0 == 2).unwrap().1, arrange(&before, 404, 100).0[1].1);
+            assert!(l.remove(3));
+            assert_eq!(l, before);
+        }
     }
 
     #[test]
@@ -291,15 +278,20 @@ mod tests {
     }
 
     #[test]
-    fn remove_flattens_same_orientation() {
+    fn remove_keeps_sibling_group() {
         let mut l = Layout::Leaf(1);
         l.split(1, 2, Side::Right);
         l.split(2, 3, Side::Bottom);
         l.split(3, 4, Side::Right);
-        // Removing 2 leaves a vertical split with one child (a horizontal split) which then flattens into the root.
+        // Removing 2 collapses the vertical split; 3 and 4 stay grouped in 2's former half.
         l.remove(2);
         assert_eq!(l.panes(), vec![1, 3, 4]);
-        assert!(matches!(&l, Layout::Split { horizontal: true, children, .. } if children.len() == 3));
+        let (rects, _) = arrange(&l, 404, 100);
+        assert_eq!(rects[0].1.w, 200);
+        l.remove(3);
+        let (rects, _) = arrange(&l, 404, 100);
+        assert_eq!(rects[0].1.w, 200);
+        assert_eq!(rects[1].1.w, 200);
     }
 
     #[test]
