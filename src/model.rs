@@ -267,7 +267,8 @@ impl Tree {
     pub fn compare(&self, a: &Node, b: &Node) -> Ordering {
         let fa = a.kind.is_folder();
         let fb = b.kind.is_folder();
-        if fa != fb {
+        // Date order mixes folders and files (matches the original app).
+        if fa != fb && self.sort != SortKey::Modified {
             return if fa { Ordering::Less } else { Ordering::Greater };
         }
         let by_name = || natural_cmp(&a.name, &b.name);
@@ -689,6 +690,23 @@ mod tests {
         t.desc = false;
         t.resort();
         assert_eq!(names(&t, t.children(root)), vec!["adir", "zdir", "b2.txt", "b10.txt"]);
+    }
+
+    #[test]
+    fn sort_by_date_mixes_folders_and_files() {
+        let (mut t, root) = root_tree();
+        let mut old_dir = entry("old", Kind::Dir, 0);
+        old_dir.modified = 10;
+        let mut new_dir = entry("new", Kind::Dir, 0);
+        new_dir.modified = 30;
+        let mut mid = entry("mid.txt", Kind::File, 1);
+        mid.modified = 20;
+        t.sort = SortKey::Modified;
+        t.merge_children(root, vec![new_dir, mid, old_dir]);
+        assert_eq!(names(&t, t.children(root)), vec!["old", "mid.txt", "new"]);
+        t.desc = true;
+        t.resort();
+        assert_eq!(names(&t, t.children(root)), vec!["new", "mid.txt", "old"]);
     }
 
     #[test]
