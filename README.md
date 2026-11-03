@@ -67,8 +67,9 @@ file operations.
 - Matches are highlighted. Folders kept only because they contain a match are
   dimmed, and an "N items hidden by the filter" row marks each folder that lost
   items.
-- A filtered tab shows a funnel in its title, and the status bar shows the
-  match/hidden counts.
+- Each tab keeps its own filter; switching tabs puts that tab's text back in
+  the box. A filtered tab shows a funnel in its title, and the status bar shows
+  the match/hidden counts.
 - `Esc` (in the box or the grid) or the × button clears it; `Enter`/`Down`
   moves to the list. Navigating the tab to another folder also clears it.
 - `Ctrl+A` and Shift-range selection skip the dimmed folders.

@@ -1100,12 +1100,16 @@ unsafe extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
     DefSubclassProc(hwnd, msg, wp, lp)
 }
 
+/// The filter box, readable while the app state is borrowed.
+static SEARCH_EDIT: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
 pub fn create_search_edit(parent: HWND) -> HWND {
     unsafe {
         let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
         let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("EDIT"), PCWSTR::null(), style, 0, 0, 0, 0, parent, None, instance(), None)
             .unwrap_or_default();
         let _ = SetWindowSubclass(h, Some(search_proc), 2, 0);
+        SEARCH_EDIT.store(h.0 as isize, std::sync::atomic::Ordering::Relaxed);
         let cue = wide("Filter this tab (Ctrl+F)");
         SendMessageW(h, EM_SETCUEBANNER, WPARAM(1), LPARAM(cue.as_ptr() as isize));
         h
@@ -1304,7 +1308,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_COMMAND => {
-            if (wp.0 >> 16) as u32 == EN_CHANGE {
+            // Only the filter box: the path edit also sends EN_CHANGE when a tab switch syncs it.
+            if (wp.0 >> 16) as u32 == EN_CHANGE && lp.0 == SEARCH_EDIT.load(std::sync::atomic::Ordering::Relaxed) {
                 // Sent synchronously (possibly while the state is borrowed): handle it later.
                 // on_filter_changed is a no-op unless the filter box text differs from the tab.
                 crate::app::FILTER_EDIT_PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
