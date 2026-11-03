@@ -629,7 +629,6 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
             Hot::Plus(p) => {
                 app.activate_pane(p);
                 app.open_tab(None, SortKey::Name, false);
-                relayout(app);
             }
             _ => {}
         }
@@ -789,10 +788,7 @@ fn favorites_menu(hwnd: HWND, button: RECT) {
         if let Some((i, sub)) = FAV_PENDING.take() {
             match sub {
                 FAV_OPEN => app.open_favorite(i, false),
-                FAV_OPEN_TAB => {
-                    app.open_favorite(i, true);
-                    relayout(app);
-                }
+                FAV_OPEN_TAB => app.open_favorite(i, true),
                 FAV_REMOVE => app.remove_favorite(i),
                 _ => {}
             }
@@ -800,9 +796,6 @@ fn favorites_menu(hwnd: HWND, button: RECT) {
             app.add_favorite();
         } else if cmd >= FAV_BASE {
             app.open_favorite((cmd - FAV_BASE) as usize, ctrl_down);
-            if ctrl_down {
-                relayout(app);
-            }
         }
     });
 }
@@ -1270,7 +1263,6 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
                 let sort = app.active_tab().and_then(|t| app.tabs.get(&t)).map(|t| (t.tree.sort, t.tree.desc));
                 let (sort, desc) = sort.unwrap_or((SortKey::Name, false));
                 app.open_tab(None, sort, desc);
-                relayout(app);
             });
             true
         }

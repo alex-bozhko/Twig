@@ -391,6 +391,7 @@ impl App {
         }
         let idx = self.panes[&pane].tabs.len() - 1;
         self.activate_tab(pane, idx);
+        crate::mainwin::relayout(self);
         id
     }
 
