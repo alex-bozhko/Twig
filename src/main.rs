@@ -18,7 +18,7 @@ mod win;
 mod zipfs;
 
 use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
-use windows::Win32::UI::Controls::{InitCommonControlsEx, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX};
+use windows::Win32::UI::Controls::{InitCommonControlsEx, ICC_STANDARD_CLASSES, ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX};
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -28,7 +28,7 @@ fn main() {
         if OleInitialize(None).is_err() {
             return;
         }
-        let icc = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_STANDARD_CLASSES };
+        let icc = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES };
         let _ = InitCommonControlsEx(&icc);
     }
     std::thread::spawn(zipfs::cleanup_old);

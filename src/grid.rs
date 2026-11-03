@@ -11,7 +11,7 @@ use crate::theme::glyph;
 use crate::util::*;
 use crate::win::*;
 use std::time::Instant;
-use windows::core::{w, HSTRING, PCWSTR};
+use windows::core::{w, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Globalization::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -86,6 +86,34 @@ pub struct GridUi {
     ctx_background: Option<bool>,
     wheel: i32,
     hwheel: i32,
+    /// Truncated cell under the mouse and the in-place tooltip showing its full text.
+    tip: Option<Tip>,
+    tip_state: TipState,
+    tip_hwnd: isize,
+}
+
+const TIMER_TIP: usize = 4;
+const TIP_DELAY_MS: u32 = 500;
+const TIP_POLL_MS: u32 = 150;
+
+/// A cell whose text doesn't fit; its full text is shown in place after a short hover.
+#[derive(PartialEq)]
+struct Tip {
+    pane: PaneId,
+    row: usize,
+    col: usize,
+    text: String,
+    /// Where the cell's text is drawn, in grid client coordinates.
+    rect: RECT,
+}
+
+#[derive(Clone, Copy, PartialEq, Default)]
+enum TipState {
+    #[default]
+    Pending,
+    Shown,
+    /// Hidden by a click/key/scroll; stays hidden until the mouse moves to another cell.
+    Dismissed,
 }
 
 pub struct Metrics {
@@ -373,6 +401,12 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
     }
     let pane = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as u32;
     let (x, y) = (x_of(lp), y_of(lp));
+    if matches!(
+        msg,
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_LBUTTONDBLCLK | WM_KEYDOWN | WM_SYSKEYDOWN | WM_MOUSEWHEEL | WM_MOUSEHWHEEL | WM_VSCROLL | WM_HSCROLL
+    ) {
+        with_app(|app| hide_tip(app, true));
+    }
     match msg {
         WM_PAINT => {
             if with_app(|app| {
@@ -447,8 +481,15 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             run_deferred(hwnd, d);
             return LRESULT(0);
         }
+        WM_TIMER if wp.0 == TIMER_TIP => {
+            with_app(|app| on_tip_timer(app, pane, hwnd));
+            return LRESULT(0);
+        }
         WM_MOUSELEAVE => {
             with_app(|app| {
+                if app.grid_ui.tip.as_ref().is_some_and(|t| t.pane == pane) {
+                    hide_tip(app, false);
+                }
                 if app.grid_ui.hover.is_some_and(|h| h.0 == pane) || app.grid_ui.bar_hover.is_some_and(|h| h.0 == pane) {
                     app.grid_ui.hover = None;
                     app.grid_ui.bar_hover = None;
@@ -999,11 +1040,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
             }
             continue;
         }
-        let size = match n.kind {
-            Kind::File | Kind::Zip | Kind::ZipFile => format_size(n.size),
-            Kind::Drive if n.size > 0 => format_size(n.size),
-            _ => String::new(),
-        };
+        let size = size_text(n);
         if !size.is_empty() {
             draw_text(hdc, &size, &rc(cx + m.pad, y, m.cols[3] - 2 * m.pad, m.row), color, DT_RIGHT_V);
         }
@@ -1306,16 +1343,27 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
             return (!paths.is_empty()).then(|| Deferred::Drag(paths, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK));
         }
     }
-    let (row, bar) = match hit(app, pane, x, y) {
-        Hit::Row { row, .. } => (Some((pane, row)), None),
-        Hit::Crumb { index, .. } => (None, Some((pane, BarHot::Crumb(index)))),
-        Hit::Up => (None, Some((pane, BarHot::Up))),
-        _ => (None, None),
+    let (row, bar, cell) = match hit(app, pane, x, y) {
+        Hit::Row { row, node, .. } => (Some((pane, row)), None, Some((row, node))),
+        Hit::Crumb { index, .. } => (None, Some((pane, BarHot::Crumb(index))), None),
+        Hit::Up => (None, Some((pane, BarHot::Up)), None),
+        _ => (None, None, None),
     };
     if app.grid_ui.hover != row || app.grid_ui.bar_hover != bar {
         app.grid_ui.hover = row;
         app.grid_ui.bar_hover = bar;
         invalidate(hwnd);
+    }
+    let tip = cell.and_then(|(row, node)| truncated_cell(app, pane, hwnd, x, row, node));
+    if tip != app.grid_ui.tip {
+        hide_tip(app, false);
+        if tip.is_some() {
+            app.grid_ui.tip = tip;
+            app.grid_ui.tip_state = TipState::Pending;
+            unsafe {
+                SetTimer(hwnd, TIMER_TIP, TIP_DELAY_MS, None);
+            }
+        }
     }
     unsafe {
         let mut tme = TRACKMOUSEEVENT {
@@ -1327,6 +1375,164 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
         let _ = TrackMouseEvent(&mut tme);
     }
     None
+}
+
+fn size_text(n: &crate::model::Node) -> String {
+    match n.kind {
+        Kind::File | Kind::Zip | Kind::ZipFile => format_size(n.size),
+        Kind::Drive if n.size > 0 => format_size(n.size),
+        _ => String::new(),
+    }
+}
+
+// ---------- Truncation tooltip ----------
+
+/// The cell of `row` at client `x` if its text is cut off (by its column or the window edge).
+fn truncated_cell(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, row: usize, node: NodeId) -> Option<Tip> {
+    if app.grid_ui.rename.as_ref().is_some_and(|r| r.node == node) {
+        return None;
+    }
+    let m = metrics(app);
+    let (font, line) = (app.fonts.ui, app.fonts.ui_height);
+    let t = app.tabs.get(&active_tid(app, pane)?)?;
+    let geo = Geo::of(&m, t);
+    let y = geo.row_y(row, t.top)?;
+    let n = t.tree.get(node)?;
+    let mut x0 = -t.scroll_x;
+    let col = (0..m.cols.len()).find(|&c| {
+        let inside = x >= x0 && x < x0 + m.cols[c];
+        if !inside {
+            x0 += m.cols[c];
+        }
+        inside
+    })?;
+    let (text, left) = match col {
+        0 => (n.name.clone(), m.text_x(t.scroll_x, n.depth)),
+        1 if n.kind != Kind::Drive => (format_time(n.modified), x0 + m.pad),
+        2 => (n.type_name.to_string(), x0 + m.pad),
+        3 if row >= geo.pin => (size_text(n), x0 + m.pad),
+        _ => return None,
+    };
+    let right = (x0 + m.cols[col] - m.pad).min(client_rect(hwnd).right);
+    if text.is_empty() {
+        return None;
+    }
+    let width = unsafe {
+        let hdc = GetDC(hwnd);
+        let w = text_width(hdc, font, &text);
+        ReleaseDC(hwnd, hdc);
+        w
+    };
+    if left >= 0 && left + width <= right {
+        return None;
+    }
+    Some(Tip { pane, row, col, text, rect: rc(left, y + (m.row - line) / 2, width, line) })
+}
+
+/// Hides the tooltip; `dismiss` keeps it hidden until the mouse moves to another cell.
+fn hide_tip(app: &mut App, dismiss: bool) {
+    let ui = &mut app.grid_ui;
+    let Some(tip) = &ui.tip else { return };
+    if let Some(p) = app.panes.get(&tip.pane) {
+        unsafe {
+            let _ = KillTimer(p.grid(), TIMER_TIP);
+        }
+    }
+    if ui.tip_state == TipState::Shown {
+        let ti = tool_info(app.hwnd, None);
+        send(isize_to_hwnd(ui.tip_hwnd), TTM_TRACKACTIVATE, 0, &ti as *const _ as isize);
+    }
+    if dismiss {
+        ui.tip_state = TipState::Dismissed;
+    } else {
+        ui.tip = None;
+    }
+}
+
+fn tool_info(owner: HWND, text: Option<&mut [u16]>) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_TRACK | TTF_ABSOLUTE | TTF_TRANSPARENT,
+        hwnd: owner,
+        uId: 1,
+        lpszText: text.map_or(PWSTR::null(), |t| PWSTR(t.as_mut_ptr())),
+        ..Default::default()
+    }
+}
+
+fn send(hwnd: HWND, msg: u32, w: usize, l: isize) -> LRESULT {
+    unsafe { SendMessageW(hwnd, msg, WPARAM(w), LPARAM(l)) }
+}
+
+/// The shared tracking tooltip, created on first use.
+fn tip_window(app: &mut App) -> Option<HWND> {
+    if app.grid_ui.tip_hwnd == 0 {
+        let style = WINDOW_STYLE(WS_POPUP.0 | TTS_NOPREFIX | TTS_ALWAYSTIP);
+        let h = unsafe {
+            CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, PCWSTR::null(), style, 0, 0, 0, 0, app.hwnd, None, instance(), None).ok()?
+        };
+        let mut empty = [0u16];
+        let ti = tool_info(app.hwnd, Some(&mut empty));
+        send(h, TTM_ADDTOOLW, 0, &ti as *const _ as isize);
+        app.grid_ui.tip_hwnd = h.0 as isize;
+    }
+    Some(isize_to_hwnd(app.grid_ui.tip_hwnd))
+}
+
+fn on_tip_timer(app: &mut App, pane: PaneId, hwnd: HWND) {
+    // Re-check the cell under the cursor: rows may have scrolled, changed or been covered.
+    let pt = cursor_pos();
+    let under = unsafe { WindowFromPoint(pt) };
+    let over = under == hwnd || (app.grid_ui.tip_hwnd != 0 && under == isize_to_hwnd(app.grid_ui.tip_hwnd));
+    let active = unsafe { GetForegroundWindow() } == app.hwnd && app.grid_ui.press.is_none() && app.grid_ui.col_drag.is_none();
+    let p = screen_to_client(hwnd, pt);
+    let current = match (over && active).then(|| hit(app, pane, p.x, p.y)) {
+        Some(Hit::Row { row, node, .. }) => truncated_cell(app, pane, hwnd, p.x, row, node),
+        _ => None,
+    };
+    if current.is_none() || current != app.grid_ui.tip {
+        hide_tip(app, false);
+        return;
+    }
+    match app.grid_ui.tip_state {
+        TipState::Pending => {
+            if show_tip(app, hwnd).is_some() {
+                app.grid_ui.tip_state = TipState::Shown;
+                unsafe {
+                    SetTimer(hwnd, TIMER_TIP, TIP_POLL_MS, None);
+                }
+            } else {
+                hide_tip(app, false);
+            }
+        }
+        TipState::Dismissed => unsafe {
+            let _ = KillTimer(hwnd, TIMER_TIP);
+        },
+        TipState::Shown => {}
+    }
+}
+
+/// Shows the tooltip exactly over the truncated text, kept on the monitor.
+fn show_tip(app: &mut App, hwnd: HWND) -> Option<()> {
+    let tip = app.grid_ui.tip.as_ref()?;
+    let (mut text, rect) = (wide(&tip.text), tip.rect);
+    let (font, dark) = (app.fonts.ui, app.dark);
+    let h = tip_window(app)?;
+    crate::theme::set_control_theme(h, dark, "DarkMode_Explorer");
+    send(h, WM_SETFONT, font.0 as usize, 0);
+    let ti = tool_info(app.hwnd, Some(&mut text));
+    send(h, TTM_UPDATETIPTEXTW, 0, &ti as *const _ as isize);
+    let tl = client_to_screen(hwnd, POINT { x: rect.left, y: rect.top });
+    let mut r = RECT { left: tl.x, top: tl.y, right: tl.x + rect.right - rect.left, bottom: tl.y + rect.bottom - rect.top };
+    send(h, TTM_ADJUSTRECT, 1, &mut r as *mut _ as isize);
+    let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    unsafe {
+        let _ = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi);
+    }
+    let x = r.left.min(mi.rcWork.right - (r.right - r.left)).max(mi.rcWork.left);
+    send(h, TTM_TRACKPOSITION, 0, ((r.top as u16 as isize) << 16) | x as u16 as isize);
+    send(h, TTM_TRACKACTIVATE, 1, &ti as *const _ as isize);
+    Some(())
 }
 
 fn on_dblclick(app: &mut App, pane: PaneId, x: i32, y: i32) -> Option<Deferred> {

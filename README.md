@@ -30,6 +30,7 @@ file operations.
 - The status bar shows the active tab's item count, and the number and total
   size of selected items.
 - Hidden items and dot-files/folders (`.git`, `.vscode`) are drawn faded.
+- Hovering a cut-off name, date or type shows the full text in place.
 - Keyboard: arrows, `Home`/`End`, `PgUp`/`PgDn`, `←`/`→` collapse/expand,
   `Ctrl+A`, `Ctrl+Space`, `F5` refresh.
 
