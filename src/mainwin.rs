@@ -5,7 +5,6 @@ use crate::app::{with_app, App, TIMER_HOVER_TAB, TIMER_STATUS, TIMER_WATCH};
 use crate::layout::{PaneId, Rect, Side, Splitter};
 use crate::loader::TabId;
 use crate::model::SortKey;
-use crate::shell;
 use crate::theme::glyph;
 use crate::util::*;
 use crate::win::*;
@@ -13,7 +12,6 @@ use std::cell::Cell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::*;
 use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -34,7 +32,6 @@ enum Btn {
     Refresh,
     ThisPc,
     Favorites,
-    Browse,
     ClearFilter,
     /// Subfolder-search toggle inside the filter box.
     Deep,
@@ -145,13 +142,11 @@ pub fn relayout(app: &mut App) {
         x += bw + scale(2, d);
     }
     x += scale(6, d);
-    let browse_w = scale(84, d);
-    let avail = (w - pad - browse_w - pad - x).max(0);
+    let avail = (w - pad - x).max(0);
     let search_w = scale(300, d).min(avail * 2 / 5);
     let path_right = (x + avail - search_w - pad).max(x + scale(60, d));
     c.path_rect = rc(x, by, path_right - x, bh);
     c.search_rect = rc(path_right + pad, by, search_w, bh);
-    c.buttons.push((Btn::Browse, rc(c.search_rect.right + pad, by, browse_w, bh)));
     let eh = app.fonts.ui_height + 2;
     unsafe {
         let _ = MoveWindow(
@@ -376,21 +371,15 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         } else if hot {
             fill(hdc, &r, pal.hover);
         }
-        let color = pal.text;
+        let g = match b {
+            Btn::Refresh => glyph::REFRESH,
+            Btn::ThisPc => glyph::THIS_PC,
+            _ => glyph::STAR,
+        };
         unsafe {
-            if b == Btn::Browse {
-                SelectObject(hdc, app.fonts.ui);
-                draw_text(hdc, "Browse…", &r, color, DT_CENTER_V);
-            } else {
-                let g = match b {
-                    Btn::Refresh => glyph::REFRESH,
-                    Btn::ThisPc => glyph::THIS_PC,
-                    _ => glyph::STAR,
-                };
-                SelectObject(hdc, app.fonts.glyph);
-                draw_text(hdc, g, &r, color, DT_CENTER_V);
-            }
+            SelectObject(hdc, app.fonts.glyph);
         }
+        draw_text(hdc, g, &r, pal.text, DT_CENTER_V);
     }
     fill(hdc, &c.path_rect, pal.edit_bg);
     let border = if c.path_editing { pal.accent } else { pal.border };
@@ -636,7 +625,6 @@ fn dock_rect(app: &App, spot: DropSpot) -> Option<RECT> {
 /// Work that must run outside the `with_app` borrow (modal menus/dialogs pump messages).
 enum Deferred {
     Favorites(RECT),
-    Browse,
     TabMenu(TabId, POINT),
     Focus(HWND),
 }
@@ -779,7 +767,6 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
                         let r = app.chrome.buttons.iter().find(|(bb, _)| *bb == b).map(|(_, r)| *r)?;
                         return Some(Deferred::Favorites(r));
                     }
-                    Btn::Browse => return Some(Deferred::Browse),
                     Btn::ClearFilter => {
                         app.clear_filter(tid);
                         return app.panes.get(&app.active_pane).map(|p| Deferred::Focus(p.grid()));
@@ -803,7 +790,6 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
     .flatten();
     match deferred {
         Some(Deferred::Favorites(r)) => favorites_menu(hwnd, r),
-        Some(Deferred::Browse) => browse(hwnd),
         Some(Deferred::Focus(h)) => unsafe {
             let _ = SetFocus(h);
         },
@@ -990,33 +976,6 @@ fn on_menu_rbutton_up(hwnd: HWND, pos: usize, menu: HMENU) {
         if cmd != 0 {
             FAV_PENDING.set(Some(((id - FAV_BASE) as usize, cmd)));
             let _ = EndMenu();
-        }
-    }
-}
-
-fn browse(hwnd: HWND) {
-    let start = with_app(|app| app.active_tab().and_then(|t| app.tabs.get(&t)).and_then(|t| t.root.clone())).flatten();
-    let picked = unsafe {
-        (|| -> Option<String> {
-            let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
-            let opts = dlg.GetOptions().ok()?;
-            dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM).ok()?;
-            if let Some(item) = start.as_deref().and_then(shell::shell_item) {
-                let _ = dlg.SetFolder(&item);
-            }
-            dlg.Show(hwnd).ok()?;
-            shell::item_path(&dlg.GetResult().ok()?)
-        })()
-    };
-    let Some(path) = picked else { return };
-    let grid = with_app(|app| {
-        let tid = app.active_tab()?;
-        app.navigate(tid, Some(&path), true).then(|| app.panes[&app.active_pane].grid())
-    })
-    .flatten();
-    if let Some(g) = grid {
-        unsafe {
-            let _ = SetFocus(g);
         }
     }
 }

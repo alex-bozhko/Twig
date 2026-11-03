@@ -134,7 +134,7 @@ fn glyph_font(px: i32) -> HFONT {
 
 pub mod glyph {
     pub const REFRESH: &str = "\u{E72C}";
-    pub const THIS_PC: &str = "\u{EC4E}";
+    pub const THIS_PC: &str = "\u{E7F4}";
     pub const STAR: &str = "\u{E734}";
     pub const CHEVRON_RIGHT: &str = "\u{E76C}";
     pub const CHEVRON_DOWN: &str = "\u{E70D}";
