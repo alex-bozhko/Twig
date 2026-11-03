@@ -143,8 +143,8 @@ pub mod glyph {
     pub const ADD: &str = "\u{E710}";
     pub const SEARCH: &str = "\u{E721}";
     pub const FILTER: &str = "\u{E71C}";
-    /// Folder tree: subfolder search toggle.
-    pub const SUBFOLDERS: &str = "\u{ED41}";
+    pub const CHECKBOX: &str = "\u{E739}";
+    pub const CHECKBOX_CHECKED: &str = "\u{E73A}";
 }
 
 /// Reads the "apps use light theme" preference.

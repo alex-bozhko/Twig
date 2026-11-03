@@ -1126,9 +1126,13 @@ impl App {
     pub fn sync_search_edit(&mut self) {
         let tab = self.active_tab().and_then(|t| self.tabs.get(&t));
         let text = tab.map(|t| t.filter.clone()).unwrap_or_default();
+        let was_shown = self.chrome.filter_active || self.chrome.deep_active;
         self.chrome.filter_active = !text.is_empty();
         self.chrome.deep_active = tab.is_some_and(|t| t.deep);
         self.chrome.deep_available = tab.is_some_and(|t| t.root.is_some() && t.error.is_none());
+        if was_shown != (self.chrome.filter_active || self.chrome.deep_active) {
+            crate::mainwin::layout_search(self);
+        }
         if !FILTER_EDIT_PENDING.load(std::sync::atomic::Ordering::Relaxed) && get_text(self.search_edit) != text {
             set_text(self.search_edit, &text);
         }

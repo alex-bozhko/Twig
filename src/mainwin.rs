@@ -99,6 +99,8 @@ pub struct Chrome {
     search_rect: RECT,
     clear_rect: RECT,
     deep_rect: RECT,
+    /// The subfolder toggle has room for its text label.
+    deep_label: bool,
     buttons: Vec<(Btn, RECT)>,
     panes: Vec<PaneChrome>,
     splitters: Vec<Splitter>,
@@ -146,13 +148,10 @@ pub fn relayout(app: &mut App) {
     x += scale(6, d);
     let browse_w = scale(84, d);
     let avail = (w - pad - browse_w - pad - x).max(0);
-    let search_w = scale(250, d).min(avail * 2 / 5);
+    let search_w = scale(300, d).min(avail * 2 / 5);
     let path_right = (x + avail - search_w - pad).max(x + scale(60, d));
     c.path_rect = rc(x, by, path_right - x, bh);
     c.search_rect = rc(path_right + pad, by, search_w, bh);
-    let icon_w = scale(28, d);
-    c.clear_rect = rc(c.search_rect.right - icon_w, by, icon_w, bh);
-    c.deep_rect = rc(c.clear_rect.left - icon_w, by, icon_w, bh);
     c.buttons.push((Btn::Browse, rc(c.search_rect.right + pad, by, browse_w, bh)));
     let eh = app.fonts.ui_height + 2;
     unsafe {
@@ -164,15 +163,8 @@ pub fn relayout(app: &mut App) {
             eh,
             true,
         );
-        let _ = MoveWindow(
-            app.search_edit,
-            c.search_rect.left + icon_w,
-            c.search_rect.top + (bh - eh) / 2,
-            (search_w - 3 * icon_w).max(0),
-            eh,
-            true,
-        );
     }
+    layout_search(app);
 
     let area = Rect::new(0, tb, w, h - tb - sb);
     let mut rects = Vec::new();
@@ -220,6 +212,42 @@ pub fn relayout(app: &mut App) {
     invalidate(hwnd);
 }
 
+const DEEP_LABEL: &str = "Subfolders";
+
+/// Lays out the filter box: search icon, edit, the subfolder toggle (only while
+/// filtering or while it is on) and the clear button. The toggle shrinks to a bare
+/// checkbox when the box is too narrow for its label.
+pub fn layout_search(app: &mut App) {
+    let d = app.dpi;
+    let label_w = unsafe {
+        let hdc = GetDC(app.hwnd);
+        let w = text_width(hdc, app.fonts.ui, DEEP_LABEL);
+        ReleaseDC(app.hwnd, hdc);
+        w
+    };
+    let c = &mut app.chrome;
+    let sr = c.search_rect;
+    let bh = sr.bottom - sr.top;
+    let icon_w = scale(28, d);
+    c.clear_rect = rc(sr.right - icon_w, sr.top, icon_w, bh);
+    let edit_left = sr.left + icon_w;
+    let mut edit_right = c.clear_rect.left;
+    c.deep_rect = RECT::default();
+    c.deep_label = false;
+    if c.filter_active || c.deep_active {
+        let full = scale(8 + 14 + 6 + 8, d) + label_w;
+        c.deep_label = edit_right - full - edit_left >= scale(80, d);
+        let w = if c.deep_label { full } else { icon_w };
+        c.deep_rect = rc(edit_right - w, sr.top, w, bh);
+        edit_right = c.deep_rect.left - scale(2, d);
+    }
+    let eh = app.fonts.ui_height + 2;
+    unsafe {
+        let _ = MoveWindow(app.search_edit, edit_left, sr.top + (bh - eh) / 2, (edit_right - edit_left).max(0), eh, true);
+    }
+    invalidate(app.hwnd);
+}
+
 fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[(String, bool)]) -> (Vec<TabRect>, RECT) {
     let top = strip.top + scale(4, d);
     let bottom = strip.bottom - 1;
@@ -265,7 +293,7 @@ fn hit(c: &Chrome, x: i32, y: i32) -> Option<Hot> {
     if c.filter_active && pt_in(&c.clear_rect, x, y) {
         return Some(Hot::Button(Btn::ClearFilter));
     }
-    if pt_in(&c.deep_rect, x, y) {
+    if c.deep_rect.right > c.deep_rect.left && pt_in(&c.deep_rect, x, y) {
         return Some(Hot::Button(Btn::Deep));
     }
     if let Some((b, _)) = c.buttons.iter().find(|(_, r)| pt_in(r, x, y)) {
@@ -390,20 +418,45 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
             }
             draw_text(hdc, glyph::CLOSE, &inner, pal.text_dim, DT_CENTER_V);
         }
-        // Subfolder-search toggle: an accent pill when on, dim when off, faint when unavailable.
-        let k = scale(4, d);
-        let inner = RECT { left: c.deep_rect.left + k, top: c.deep_rect.top + k, right: c.deep_rect.right - k, bottom: c.deep_rect.bottom - k };
-        let hot = c.hot == Some(Hot::Button(Btn::Deep));
-        let color = if c.deep_active {
-            fill(hdc, &inner, pal.accent);
-            pal.bg
-        } else {
-            if hot && c.deep_available {
-                fill(hdc, &inner, pal.hover);
+        // Subfolder toggle, a labeled checkbox: accent fill when on, outlined when off,
+        // faint when unavailable. Hidden until the filter is in use.
+        if c.deep_rect.right > c.deep_rect.left {
+            let (kx, ky) = (scale(2, d), scale(5, d));
+            let inner = RECT { left: c.deep_rect.left + kx, top: c.deep_rect.top + ky, right: c.deep_rect.right - kx, bottom: c.deep_rect.bottom - ky };
+            let hot = c.hot == Some(Hot::Button(Btn::Deep));
+            let color = if c.deep_active {
+                fill(hdc, &inner, pal.accent);
+                pal.bg
+            } else {
+                if hot && c.deep_available {
+                    fill(hdc, &inner, pal.hover);
+                }
+                frame(hdc, &inner, pal.border, 1);
+                if !c.deep_available {
+                    pal.border
+                } else if hot {
+                    pal.text
+                } else {
+                    pal.text_dim
+                }
+            };
+            let check = if c.deep_active { glyph::CHECKBOX_CHECKED } else { glyph::CHECKBOX };
+            unsafe {
+                SelectObject(hdc, app.fonts.glyph_small);
             }
-            if c.deep_available { pal.text_dim } else { pal.border }
-        };
-        draw_text(hdc, glyph::SUBFOLDERS, &inner, color, DT_CENTER_V);
+            if c.deep_label {
+                let pad = scale(8, d);
+                let box_r = RECT { left: inner.left + pad - kx, right: inner.left + pad - kx + scale(14, d), ..inner };
+                draw_text(hdc, check, &box_r, color, DT_CENTER_V);
+                let text_r = RECT { left: box_r.right + scale(6, d), ..inner };
+                unsafe {
+                    SelectObject(hdc, app.fonts.ui);
+                }
+                draw_text(hdc, DEEP_LABEL, &text_r, color, DT_LEFT_V);
+            } else {
+                draw_text(hdc, check, &inner, color, DT_CENTER_V);
+            }
+        }
     }
     let line = rc(0, c.toolbar.bottom - 1, client.right, 1);
     fill(hdc, &line, pal.border);

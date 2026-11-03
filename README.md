@@ -72,7 +72,8 @@ file operations.
 - `Esc` (in the box or the grid) or the × button clears it; `Enter`/`Down`
   moves to the list. Navigating the tab to another folder also clears it.
 - `Ctrl+A` and Shift-range selection skip the dimmed folders.
-- **Search subfolders** (the folder-tree toggle in the filter box, or `Alt+S`)
+- **Search subfolders** (the **Subfolders** checkbox that appears in the filter
+  box once you type, or `Alt+S`)
   also searches inside collapsed folders. It is off by default, highlighted when
   on, and unavailable in This PC. Subfolders are read in the background (a
   "Searching subfolders…" row shows progress) up to 250,000 items per tab; if
