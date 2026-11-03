@@ -174,8 +174,9 @@ enum BarHot {
     Crumb(usize),
 }
 
-/// Vertical layout: breadcrumb bar (zoomed or typing a path), column header, pinned root row, scrolling rows.
+/// Vertical layout: column header, pinned root row, scrolling rows, breadcrumb bar at the bottom.
 pub struct Geo {
+    /// Height of the breadcrumb bar along the bottom edge.
     crumb: i32,
     header_y: i32,
     body: i32,
@@ -187,10 +188,13 @@ pub struct Geo {
 impl Geo {
     /// Call after `t.ensure_rows()`.
     fn of(m: &Metrics, t: &Tab) -> Geo {
-        let crumb = m.header;
         let pin = t.pinned();
-        let body = crumb + m.header;
-        Geo { crumb, header_y: crumb, body, pin, scroll_y: body + pin as i32 * m.row, row: m.row }
+        let body = m.header;
+        Geo { crumb: m.header, header_y: 0, body, pin, scroll_y: body + pin as i32 * m.row, row: m.row }
+    }
+    /// Top edge of the breadcrumb bar in a grid `h` pixels tall.
+    fn crumb_top(&self, h: i32) -> i32 {
+        h - self.crumb
     }
     /// Top edge of row `i`, if it is laid out (pinned or at/after `top`).
     fn row_y(&self, i: usize, top: usize) -> Option<i32> {
@@ -224,11 +228,15 @@ pub fn scroll_area_top(app: &mut App, pane: PaneId) -> i32 {
     }
 }
 
+/// Bottom of the scrolling rows in `pane` (top of the breadcrumb bar).
+pub fn scroll_area_bottom(app: &App, pane: PaneId) -> i32 {
+    client_rect(app.panes[&pane].grid()).bottom - metrics(app).header
+}
+
 /// Rows that fit in `pane`'s scrolling area for its active tab's current layout.
 pub fn scroll_view_rows(app: &mut App, pane: PaneId) -> usize {
     let m = metrics(app);
-    let h = client_rect(app.panes[&pane].grid()).bottom;
-    ((h - scroll_area_top(app, pane)) / m.row).max(1) as usize
+    ((scroll_area_bottom(app, pane) - scroll_area_top(app, pane)) / m.row).max(1) as usize
 }
 
 /// One breadcrumb segment, laid out left to right.
@@ -240,10 +248,10 @@ struct Crumb {
     target: Option<Option<String>>,
 }
 
-/// The breadcrumb's field rect; the path editor covers it while typing.
-fn crumb_box(app: &App, w: i32) -> RECT {
+/// The breadcrumb's field rect in a `w`×`h` grid; the path editor covers it while typing.
+fn crumb_box(app: &App, w: i32, h: i32) -> RECT {
     let m = metrics(app);
-    rc(m.pad / 2, scale(2, app.dpi), w - m.pad, m.header - scale(5, app.dpi))
+    rc(m.pad / 2, h - m.header + scale(3, app.dpi), w - m.pad, m.header - scale(5, app.dpi))
 }
 
 /// Gap between breadcrumb segments (holds the chevron).
@@ -596,13 +604,13 @@ pub fn sync(app: &mut App, pane: PaneId) {
         Some(t) => {
             t.ensure_rows();
             let geo = Geo::of(&m, t);
-            let view = ((h - geo.scroll_y) / m.row).max(1) as usize;
+            let view = ((geo.crumb_top(h) - geo.scroll_y) / m.row).max(1) as usize;
             let n = if t.error.is_some() { 0 } else { t.rows.len() };
             t.top = t.top.min(n.saturating_sub(view)).max(geo.pin);
             t.scroll_x = t.scroll_x.clamp(0, (m.total() - w).max(0));
             (n, t.top, t.scroll_x, geo.pin, view)
         }
-        None => (0, 0, 0, 0, ((h - m.header) / m.row).max(1) as usize),
+        None => (0, 0, 0, 0, ((h - 2 * m.header) / m.row).max(1) as usize),
     };
     if let Some(p) = app.panes.get_mut(&pane) {
         p.view_rows = view;
@@ -732,12 +740,13 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
     let Some(t) = app.tabs.get_mut(&tid) else { return Hit::Nothing };
     t.ensure_rows();
     let geo = Geo::of(&m, t);
-    if y < geo.crumb {
+    let hwnd = app.panes[&pane].grid();
+    let cr = client_rect(hwnd);
+    if y >= geo.crumb_top(cr.bottom) {
         if t.editing_path {
             return Hit::Nothing;
         }
-        let hwnd = app.panes[&pane].grid();
-        let w = client_rect(hwnd).right;
+        let w = cr.right;
         let crumbs = unsafe {
             let hdc = GetDC(hwnd);
             let c = tab_crumbs(app, pane, hdc, w);
@@ -838,7 +847,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let cut = app.cut.as_ref().map(|(_, set)| set);
     let bar_hover = app.grid_ui.bar_hover.filter(|h| h.0 == pane).map(|h| h.1);
     let crumbs = if app.tabs.get(&tid).is_some_and(|t| !t.editing_path) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
-    let (sep, glyph_mid) = (crumb_sep(app), app.fonts.glyph_mid);
+    let (sep, glyph_mid, dpi) = (crumb_sep(app), app.fonts.glyph_mid, app.dpi);
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
     let geo = Geo::of(&m, t);
@@ -848,32 +857,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     unsafe {
         SelectObject(hdc, font);
     }
-    // Breadcrumb (or the path editor's backdrop).
-    if geo.crumb > 0 {
-        fill(hdc, &rc(0, 0, w, geo.crumb - 1), pal.toolbar);
-        fill(hdc, &rc(0, geo.crumb - 1, w, 1), pal.border);
-        let last = crumbs.len().saturating_sub(1);
-        for (i, c) in crumbs.iter().enumerate() {
-            let cr = rc(c.x, scale(5, app.dpi), c.w, geo.crumb - scale(11, app.dpi));
-            if c.target.is_some() && bar_hover == Some(BarHot::Crumb(i)) {
-                fill(hdc, &cr, pal.hover);
-            }
-            let color = if i == last { pal.text } else { pal.text_soft };
-            if i > 0 {
-                unsafe {
-                    SelectObject(hdc, glyph_mid);
-                }
-                draw_text(hdc, glyph::CHEVRON_RIGHT, &rc(c.x - sep, 0, sep, geo.crumb - scale(1, app.dpi)), pal.text_dim, DT_CENTER_V);
-            }
-            unsafe {
-                SelectObject(hdc, if i == 0 { glyph_mid } else { font });
-            }
-            draw_text(hdc, &c.label, &rc(c.x, 0, c.w, geo.crumb - scale(1, app.dpi)), color, DT_CENTER_V);
-        }
-        unsafe {
-            SelectObject(hdc, font);
-        }
-    }
+    let bar = CrumbBar { crumbs: &crumbs, y: geo.crumb_top(r.bottom), w, h: geo.crumb, sep, font, glyph_mid, hover: bar_hover, dpi };
     // Header.
     let hy = geo.header_y;
     fill(hdc, &rc(0, hy, w, m.header), pal.toolbar);
@@ -909,6 +893,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
 
     if let Some(err) = &t.error {
         draw_text(hdc, err, &rc(0, geo.body, w, m.row * 3), pal.error, DT_CENTER_V);
+        draw_crumb_bar(hdc, &bar, &pal);
         return;
     }
 
@@ -1011,6 +996,46 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         if !size.is_empty() {
             draw_text(hdc, &size, &rc(cx + m.pad, y, m.cols[3] - 2 * m.pad, m.row), color, DT_RIGHT_V);
         }
+    }
+    draw_crumb_bar(hdc, &bar, &pal);
+}
+
+/// The breadcrumb bar's layout and state for one paint.
+struct CrumbBar<'a> {
+    crumbs: &'a [Crumb],
+    y: i32,
+    w: i32,
+    h: i32,
+    sep: i32,
+    font: HFONT,
+    glyph_mid: HFONT,
+    hover: Option<BarHot>,
+    dpi: u32,
+}
+
+/// Draws the breadcrumb strip along the bottom (also the path editor's backdrop); covers any partial row.
+fn draw_crumb_bar(hdc: HDC, b: &CrumbBar, pal: &crate::theme::Palette) {
+    let (y, h) = (b.y + 1, b.h - 1);
+    fill(hdc, &rc(0, b.y, b.w, 1), pal.border);
+    fill(hdc, &rc(0, y, b.w, h), pal.toolbar);
+    let last = b.crumbs.len().saturating_sub(1);
+    for (i, c) in b.crumbs.iter().enumerate() {
+        if c.target.is_some() && b.hover == Some(BarHot::Crumb(i)) {
+            fill(hdc, &rc(c.x, y + scale(5, b.dpi), c.w, h - scale(10, b.dpi)), pal.hover);
+        }
+        if i > 0 {
+            unsafe {
+                SelectObject(hdc, b.glyph_mid);
+            }
+            draw_text(hdc, glyph::CHEVRON_RIGHT, &rc(c.x - b.sep, y, b.sep, h), pal.text_dim, DT_CENTER_V);
+        }
+        unsafe {
+            SelectObject(hdc, if i == 0 { b.glyph_mid } else { b.font });
+        }
+        draw_text(hdc, &c.label, &rc(c.x, y, c.w, h), if i == last { pal.text } else { pal.text_soft }, DT_CENTER_V);
+    }
+    unsafe {
+        SelectObject(hdc, b.font);
     }
 }
 
@@ -1900,7 +1925,8 @@ fn place_path_edit(app: &mut App) {
     let (edit, pane, tid) = (isize_to_hwnd(pe.edit), pe.pane, pe.tab);
     let shown = active_tid(app, pane) == Some(tid);
     let w = app.panes.get(&pane).map_or(0, |p| client_rect(p.grid()).right);
-    let mut b = crumb_box(app, w);
+    let h = app.panes.get(&pane).map_or(0, |p| client_rect(p.grid()).bottom);
+    let mut b = crumb_box(app, w, h);
     b.right = b.right.max(b.left);
     unsafe {
         if shown {

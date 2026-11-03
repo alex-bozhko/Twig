@@ -104,11 +104,11 @@ impl GridDrop {
         let r = with_app(|app| {
             if scroll {
                 let m = crate::grid::metrics(app);
-                let h = client_rect(hwnd).bottom;
                 let top = crate::grid::scroll_area_top(app, pane);
+                let bottom = crate::grid::scroll_area_bottom(app, pane);
                 let dir = if p.y >= top && p.y < top + m.row / 2 {
                     -1
-                } else if p.y > h - m.row / 2 {
+                } else if p.y > bottom - m.row / 2 && p.y < bottom {
                     1
                 } else {
                     0
