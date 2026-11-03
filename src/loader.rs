@@ -19,7 +19,7 @@ pub type TabId = u32;
 
 pub enum Job {
     List { tab: TabId, node: NodeId, path: String },
-    Drives { tab: TabId },
+    Drives { tab: TabId, favorites: Vec<String> },
     Zip { tab: TabId, node: NodeId, path: String },
     Details { tab: TabId, node: NodeId, path: String, items: Vec<(String, u32, bool)> },
 }
@@ -84,7 +84,7 @@ pub fn cancel_tab(tab: TabId) {
 
 fn job_tab(j: &Job) -> TabId {
     match j {
-        Job::List { tab, .. } | Job::Drives { tab } | Job::Zip { tab, .. } | Job::Details { tab, .. } => *tab,
+        Job::List { tab, .. } | Job::Drives { tab, .. } | Job::Zip { tab, .. } | Job::Details { tab, .. } => *tab,
     }
 }
 
@@ -124,7 +124,7 @@ fn worker(s: Arc<Shared>) {
                 let result = list_dir(&path);
                 publish(&s, Done::Listed { tab, node, path, result });
             }
-            Job::Drives { tab } => publish(&s, Done::Drives { tab, entries: list_drives() }),
+            Job::Drives { tab, favorites } => publish(&s, Done::Drives { tab, entries: this_pc(&favorites) }),
             Job::Zip { tab, node, path } => publish(&s, Done::Zip { tab, node, result: list_zip(&path) }),
             Job::Details { tab, node, path, items } => {
                 for chunk in items.chunks(48) {
@@ -362,6 +362,20 @@ pub fn list_drives() -> Vec<Entry> {
             icon_final: true,
             has_children: None,
         });
+    }
+    out
+}
+
+/// This PC: the drives, then each existing favorite folder (drive roots are already listed).
+fn this_pc(favorites: &[String]) -> Vec<Entry> {
+    let mut out = list_drives();
+    let mut seen: std::collections::HashSet<String> = out.iter().map(|e| crate::util::path_key(&e.path)).collect();
+    for f in favorites {
+        if let Some(e) = entry_for_path(f).filter(|e| e.kind != Kind::Drive) {
+            if seen.insert(crate::util::path_key(&e.path)) {
+                out.push(e);
+            }
+        }
     }
     out
 }

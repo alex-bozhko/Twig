@@ -551,7 +551,7 @@ impl App {
             None => {
                 t.root = None;
                 t.tree.fixed_root_order = true;
-                loader::submit(Job::Drives { tab: tid });
+                loader::submit(self.drives_job(tid));
             }
             Some(p) => {
                 t.tree.fixed_root_order = false;
@@ -766,8 +766,9 @@ impl App {
             return;
         }
         if t.root.is_none() {
-            loader::submit(Job::Drives { tab: tid });
+            loader::submit(self.drives_job(tid));
         }
+        let Some(t) = self.tabs.get(&tid) else { return };
         let dirs: Vec<NodeId> = t.tree.loaded_dirs().into_iter().map(|(id, _)| id).collect();
         for id in dirs {
             self.load_node(tid, id);
@@ -778,9 +779,14 @@ impl App {
     pub fn refresh_drives(&mut self) {
         for t in self.tabs.values() {
             if t.root.is_none() {
-                loader::submit(Job::Drives { tab: t.id });
+                loader::submit(self.drives_job(t.id));
             }
         }
+    }
+
+    /// The This PC listing: drives followed by the favorite folders.
+    fn drives_job(&self, tab: TabId) -> Job {
+        Job::Drives { tab, favorites: self.settings.favorites.iter().map(|f| f.path.clone()).collect() }
     }
 
     pub fn on_loaded(&mut self) {
@@ -1085,7 +1091,7 @@ impl App {
                         self.recover_root(tid);
                     }
                 } else {
-                    loader::submit(Job::Drives { tab: tid });
+                    loader::submit(self.drives_job(tid));
                 }
                 continue;
             }
@@ -1116,7 +1122,7 @@ impl App {
             let changed: Vec<String> = t.changed.drain().collect();
             let mut nodes = Vec::new();
             for key in changed {
-                if let Some(id) = t.tree.find_path(&key) {
+                for id in t.tree.find_paths(&key) {
                     if t.tree.get(id).is_some_and(|n| n.kind.is_fs_dir() && n.children.is_some()) {
                         nodes.push(id);
                     }
@@ -1167,7 +1173,7 @@ impl App {
                     let t = &self.tabs[&t2];
                     r.refresh
                         .iter()
-                        .filter_map(|d| t.tree.find_path(d))
+                        .flat_map(|d| t.tree.find_paths(d))
                         .filter(|&id| t.tree.get(id).is_some_and(|n| n.kind.is_fs_dir() && n.children.is_some()))
                         .collect()
                 };
@@ -1330,6 +1336,7 @@ impl App {
         } else {
             self.settings.favorites.push(Favorite { path: root, sort, desc });
             self.set_status(format!("Added favorite: {name}"));
+            self.refresh_drives();
         }
         self.save_settings();
     }
@@ -1339,7 +1346,13 @@ impl App {
             let f = self.settings.favorites.remove(i);
             self.set_status(format!("Removed favorite: {}", file_name(&f.path)));
             self.save_settings();
+            self.refresh_drives();
         }
+    }
+
+    /// Index of the favorite for `path`, if any.
+    pub fn favorite_index(&self, path: &str) -> Option<usize> {
+        self.settings.favorites.iter().position(|f| path_key(&f.path) == path_key(path))
     }
 
     pub fn open_favorite(&mut self, i: usize, new_tab: bool) {

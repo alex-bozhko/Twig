@@ -539,30 +539,54 @@ impl Tree {
         out
     }
 
-    /// Finds a loaded node by full path (case-insensitive).
+    /// Finds a loaded node by full path (case-insensitive). When the path is loaded more than once
+    /// (a favorite root also reachable through its drive), a visible copy is preferred.
     pub fn find_path(&self, path: &str) -> Option<NodeId> {
+        let all = self.find_paths(path);
+        all.iter().copied().find(|&id| self.is_shown(id)).or_else(|| all.first().copied())
+    }
+
+    /// Every loaded node with this path, those under the most specific root first.
+    pub fn find_paths(&self, path: &str) -> Vec<NodeId> {
         let key = path_key(path);
-        let mut level: &[NodeId] = &self.roots;
+        let mut starts: Vec<(usize, NodeId)> = self
+            .roots
+            .iter()
+            .filter_map(|&id| {
+                let nk = path_key(&self.get(id)?.path);
+                covers(&nk, &key).then_some((nk.len(), id))
+            })
+            .collect();
+        starts.sort_by(|a, b| b.0.cmp(&a.0));
+        starts.into_iter().filter_map(|(_, id)| self.descend(id, &key)).collect()
+    }
+
+    /// Walks down from `id`, which covers `key`, through loaded children.
+    fn descend(&self, mut id: NodeId, key: &str) -> Option<NodeId> {
         'outer: loop {
-            for &id in level {
-                let Some(n) = self.get(id) else { continue };
-                let nk = path_key(&n.path);
-                if nk == key {
-                    return Some(id);
-                }
-                let prefix = if nk.ends_with('\\') { nk.clone() } else { format!("{nk}\\") };
-                if key.starts_with(&prefix) {
-                    match &n.children {
-                        Some(ch) => {
-                            level = ch;
-                            continue 'outer;
-                        }
-                        None => return None,
-                    }
+            let n = self.get(id)?;
+            if path_key(&n.path) == key {
+                return Some(id);
+            }
+            for &c in n.children.as_deref()? {
+                if self.get(c).is_some_and(|cn| covers(&path_key(&cn.path), key)) {
+                    id = c;
+                    continue 'outer;
                 }
             }
             return None;
         }
+    }
+
+    /// True if every ancestor of the node is expanded.
+    fn is_shown(&self, mut id: NodeId) -> bool {
+        while let Some(p) = self.get(id).and_then(|n| n.parent) {
+            if !self.get(p).is_some_and(|n| n.expanded) {
+                return false;
+            }
+            id = p;
+        }
+        true
     }
 
     pub fn is_ancestor(&self, ancestor: NodeId, mut id: NodeId) -> bool {
@@ -644,6 +668,11 @@ impl Tree {
         }
         out
     }
+}
+
+/// True if the node with path key `nk` is `key` or one of its ancestors.
+fn covers(nk: &str, key: &str) -> bool {
+    key == nk || key.strip_prefix(nk).is_some_and(|rest| nk.ends_with('\\') || rest.starts_with('\\'))
 }
 
 #[cfg(test)]
@@ -764,6 +793,35 @@ mod tests {
         assert_eq!(t.find_path("C:\\r\\zz"), None);
         assert_eq!(t.expanded_paths(), vec!["C:\\r".to_string()]);
         assert!(t.is_ancestor(root, a));
+    }
+
+    #[test]
+    fn find_path_with_favorite_root() {
+        let mut t = Tree::new(SortKey::Name, false);
+        t.fixed_root_order = true;
+        let at = |name: &str, path: &str, kind: Kind| Entry { path: path.into(), ..entry(name, kind, 0) };
+        t.merge_roots(vec![at("C:", "C:\\", Kind::Drive), at("a", "C:\\r\\a", Kind::Dir)]);
+        let (drive, fav) = (t.roots[0], t.roots[1]);
+        assert_eq!(t.find_path("C:\\r\\a"), Some(fav));
+        // A favorite's contents resolve through it even while the drive is not loaded.
+        t.merge_children(fav, vec![at("x", "C:\\r\\a\\x", Kind::File)]);
+        let fav_x = t.children(fav)[0];
+        assert_eq!(t.find_path("c:\\R\\a\\X"), Some(fav_x));
+        // Loaded through the drive as well: both copies are found, the visible one preferred.
+        t.merge_children(drive, vec![at("r", "C:\\r", Kind::Dir)]);
+        let r = t.children(drive)[0];
+        t.merge_children(r, vec![at("a", "C:\\r\\a", Kind::Dir)]);
+        let a = t.children(r)[0];
+        t.merge_children(a, vec![at("x", "C:\\r\\a\\x", Kind::File)]);
+        let drive_x = t.children(a)[0];
+        for id in [drive, r, a] {
+            t.get_mut(id).unwrap().expanded = true;
+        }
+        assert_eq!(t.find_paths("C:\\r\\a\\x"), vec![fav_x, drive_x]);
+        assert_eq!(t.find_path("C:\\r\\a\\x"), Some(drive_x));
+        t.get_mut(fav).unwrap().expanded = true;
+        assert_eq!(t.find_path("C:\\r\\a\\x"), Some(fav_x));
+        assert_eq!(t.find_path("C:\\rr"), None);
     }
 
     #[test]

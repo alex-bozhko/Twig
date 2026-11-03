@@ -55,6 +55,9 @@ file operations.
 
 - ★ menu: add the current folder, open in current or new tab, right-click to
   remove.
+- **This PC** lists favorites below the drives, after a divider. They expand
+  in place. Right-click one to remove it. They can't be renamed, deleted, cut
+  or dragged away from there.
 
 ### Persistence
 

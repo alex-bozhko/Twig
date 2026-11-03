@@ -37,6 +37,7 @@ const C_EXPLORER: u32 = ID_CUSTOM_FIRST + 8;
 const C_OPEN: u32 = ID_CUSTOM_FIRST + 9;
 const C_COPY: u32 = ID_CUSTOM_FIRST + 10;
 const C_REFRESH: u32 = ID_CUSTOM_FIRST + 11;
+const C_UNFAVORITE: u32 = ID_CUSTOM_FIRST + 12;
 
 struct Press {
     pane: PaneId,
@@ -614,6 +615,12 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         return;
     }
 
+    // In This PC a line separates the drives from the favorites below them.
+    let divider = if t.root.is_none() {
+        t.tree.roots.iter().copied().find(|&id| t.tree.get(id).is_some_and(|n| n.kind != Kind::Drive))
+    } else {
+        None
+    };
     let last = (t.top + view + 1).min(t.rows.len());
     for i in t.top..last {
         let id = t.rows[i];
@@ -629,6 +636,9 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         };
         if bg != pal.bg {
             fill(hdc, &row, bg);
+        }
+        if divider == Some(id) && i > 0 {
+            fill(hdc, &rc(0, y, w, scale(1, app.dpi).max(1)), pal.border);
         }
         if drop == Some(id) {
             frame(hdc, &row, pal.accent, 1);
@@ -739,6 +749,22 @@ fn any_virtual(t: &Tab, nodes: &[NodeId]) -> bool {
     nodes.iter().any(|&id| t.tree.get(id).is_some_and(|n| n.kind.is_virtual()))
 }
 
+/// A favorite shortcut listed below the drives in This PC.
+fn is_favorite_root(t: &Tab, id: NodeId) -> bool {
+    t.root.is_none() && t.tree.get(id).is_some_and(|n| n.parent.is_none() && n.kind != Kind::Drive)
+}
+
+/// Why drives and This PC favorites in `nodes` can't be `verb` (cut, deleted, ...), if any are.
+fn fixed_error(t: &Tab, nodes: &[NodeId], verb: &str) -> Option<String> {
+    if nodes.iter().any(|&id| t.tree.get(id).is_some_and(|n| n.kind == Kind::Drive)) {
+        Some(format!("Drives can't be {verb}"))
+    } else if nodes.iter().any(|&id| is_favorite_root(t, id)) {
+        Some(format!("Favorites can't be {verb} from This PC"))
+    } else {
+        None
+    }
+}
+
 fn paths_of(t: &Tab, nodes: &[NodeId]) -> Vec<String> {
     nodes.iter().filter_map(|&id| t.path_of(id)).collect()
 }
@@ -764,8 +790,8 @@ fn copy_nodes(app: &mut App, tid: TabId, nodes: &[NodeId], cut: bool) {
         }
         return;
     }
-    if cut && nodes.iter().any(|&id| t.tree.get(id).is_some_and(|n| n.kind == Kind::Drive)) {
-        app.set_status_error("Drives can't be cut".into());
+    if let Some(e) = fixed_error(t, nodes, "cut").filter(|_| cut) {
+        app.set_status_error(e);
         return;
     }
     let paths = paths_of(t, nodes);
@@ -783,8 +809,8 @@ fn delete_nodes(app: &mut App, tid: TabId, nodes: &[NodeId], recycle: bool) -> O
         app.set_status_error("Items inside an archive can't be deleted".into());
         return None;
     }
-    if nodes.iter().any(|&id| t.tree.get(id).is_some_and(|n| n.kind == Kind::Drive)) {
-        app.set_status_error("Drives can't be deleted".into());
+    if let Some(e) = fixed_error(t, nodes, "deleted") {
+        app.set_status_error(e);
         return None;
     }
     let items = paths_of(t, nodes);
@@ -897,7 +923,7 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
             let pr = app.grid_ui.press.take()?;
             let t = app.tabs.get_mut(&pr.tid)?;
             let nodes = t.selected();
-            if nodes.iter().any(|&id| t.tree.get(id).is_some_and(|n| n.kind == Kind::Drive)) {
+            if fixed_error(t, &nodes, "moved").is_some() {
                 return None;
             }
             if any_virtual(t, &nodes) {
@@ -1069,6 +1095,9 @@ fn prepare_menu(app: &mut App, pane: PaneId, hwnd: HWND, keyboard: bool, pt: POI
         if !virt {
             items.push(MenuItem::Item(C_EXPLORER, "Open in Explorer".into()));
         }
+        if is_favorite_root(t, nodes[0]) {
+            items.push(MenuItem::Item(C_UNFAVORITE, "Remove from favorites".into()));
+        }
     }
     if virt {
         items.push(MenuItem::Item(C_COPY, "Copy".into()));
@@ -1135,6 +1164,12 @@ fn handle_menu(app: &mut App, pane: PaneId, prep: MenuPrep, res: MenuResult) -> 
                 }
             }
             C_COPY => copy_nodes(app, tid, &nodes, false),
+            C_UNFAVORITE => {
+                let path = app.tabs.get(&tid)?.tree.get(nodes[0])?.path.clone();
+                if let Some(i) = app.favorite_index(&path) {
+                    app.remove_favorite(i);
+                }
+            }
             _ => {}
         },
         MenuResult::Verb(v) => match v.as_str() {
@@ -1276,7 +1311,7 @@ pub fn begin_rename(app: &mut App, pane: PaneId, id: NodeId) {
         return;
     }
     let Some(n) = t.tree.get(id) else { return };
-    if n.kind == Kind::Drive || n.kind.is_virtual() {
+    if n.kind == Kind::Drive || n.kind.is_virtual() || is_favorite_root(t, id) {
         let msg = format!("Cannot rename {}", n.name);
         app.set_status_error(msg);
         return;
