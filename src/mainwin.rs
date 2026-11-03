@@ -438,7 +438,19 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     for (i, s) in c.splitters.iter().enumerate() {
         let r = to_rect(s.rect);
         let active = c.hot == Some(Hot::Splitter(i)) || c.split_drag.as_ref().is_some_and(|(sp, _)| sp.path == s.path && sp.index == s.index);
-        fill(hdc, &r, if active { pal.accent } else { pal.toolbar });
+        if active {
+            fill(hdc, &r, pal.accent);
+        } else {
+            // A toolbar-colored gutter with border edges, so panes read as separate.
+            fill(hdc, &r, pal.toolbar);
+            let (a, b) = if s.horizontal {
+                (rc(r.left, r.top, 1, r.bottom - r.top), rc(r.right - 1, r.top, 1, r.bottom - r.top))
+            } else {
+                (rc(r.left, r.top, r.right - r.left, 1), rc(r.left, r.bottom - 1, r.right - r.left, 1))
+            };
+            fill(hdc, &a, pal.border);
+            fill(hdc, &b, pal.border);
+        }
     }
 
     // Tab strips
