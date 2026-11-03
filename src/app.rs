@@ -8,7 +8,7 @@
 use crate::fileops::{self, Op, UndoEntry};
 use crate::layout::{Layout, PaneId, Side};
 use crate::loader::{self, Done, Job, TabId};
-use crate::model::{Kind, NodeId, SortKey, Tree};
+use crate::model::{Filtered, Kind, NodeId, SortKey, Tree};
 use crate::settings::{Favorite, LayoutEntry, Settings, TabEntry};
 use crate::shell;
 use crate::theme::{Fonts, Palette};
@@ -81,6 +81,10 @@ pub struct Tab {
     /// Debounced change notifications (path keys).
     pub changed: HashSet<String>,
     pub rows: Vec<NodeId>,
+    /// Name filter for this tab ("" = none).
+    pub filter: String,
+    /// Filter details for drawing (its `rows` are moved into `rows`).
+    pub filtered: Filtered,
     dirty: bool,
     focus_row: usize,
 }
@@ -104,6 +108,8 @@ impl Tab {
             error: None,
             changed: HashSet::new(),
             rows: Vec::new(),
+            filter: String::new(),
+            filtered: Filtered::default(),
             dirty: true,
             focus_row: 0,
         }
@@ -119,7 +125,13 @@ impl Tab {
             return;
         }
         self.dirty = false;
-        self.rows = self.tree.visible();
+        if self.filter.is_empty() {
+            self.filtered = Filtered::default();
+            self.rows = self.tree.visible();
+        } else {
+            self.filtered = self.tree.filtered(&self.filter);
+            self.rows = std::mem::take(&mut self.filtered.rows);
+        }
         if self.root.is_none() {
             // This PC: a "Favorites" header precedes the first favorite root.
             let first_fav = self.rows.iter().position(|&id| self.tree.get(id).is_some_and(|n| n.parent.is_none() && n.kind != Kind::Drive));
@@ -138,14 +150,23 @@ impl Tab {
             if self.rows.contains(&id) {
                 break;
             }
+            if !self.filter.is_empty() && self.tree.is_shown(id) {
+                // Hidden by the filter: keep the row position instead.
+                f = None;
+                break;
+            }
             f = self.tree.get(id).and_then(|n| n.parent);
         }
         let idx = match f.and_then(|id| self.rows.iter().position(|&r| r == id)) {
             Some(i) => i,
             None => self.focus_row.min(self.rows.len() - 1),
         };
-        // The header is always followed by a favorite.
-        let idx = if self.rows[idx] == NodeId::SECTION { idx + 1 } else { idx };
+        // Placeholder rows (header, hidden markers) can't take focus: use the nearest real row.
+        let real = |i: &usize| !self.rows[*i].is_placeholder();
+        let Some(idx) = (idx..self.rows.len()).find(real).or_else(|| (0..idx).rev().find(real)) else {
+            self.focus = None;
+            return;
+        };
         self.focus = Some(self.rows[idx]);
         self.focus_row = idx;
         if !self.anchor.is_some_and(|a| self.tree.exists(a)) {
@@ -259,6 +280,7 @@ pub struct App {
     /// Our last "cut" clipboard object and the cut paths (keys) for ghosting.
     pub cut: Option<(IDataObject, HashSet<String>)>,
     pub path_edit: HWND,
+    pub search_edit: HWND,
     pub grid_ui: crate::grid::GridUi,
     pub chrome: crate::mainwin::Chrome,
     op_meta: HashMap<u64, OpMeta>,
@@ -269,7 +291,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(hwnd: HWND, path_edit: HWND, dpi: u32, dark: bool, settings: Settings) -> Box<App> {
+    pub fn new(hwnd: HWND, path_edit: HWND, search_edit: HWND, dpi: u32, dark: bool, settings: Settings) -> Box<App> {
         let mut app = Box::new(App {
             hwnd,
             dpi,
@@ -287,6 +309,7 @@ impl App {
             status_error: false,
             cut: None,
             path_edit,
+            search_edit,
             grid_ui: Default::default(),
             chrome: Default::default(),
             op_meta: HashMap::new(),
@@ -415,6 +438,7 @@ impl App {
         crate::grid::end_rename(self, false);
         crate::grid::sync(self, pane);
         self.sync_path_edit();
+        self.sync_search_edit();
         invalidate(self.hwnd);
         unsafe {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(grid);
@@ -425,6 +449,7 @@ impl App {
         if self.active_pane != pane && self.panes.contains_key(&pane) {
             self.active_pane = pane;
             self.sync_path_edit();
+            self.sync_search_edit();
             invalidate(self.hwnd);
             for p in self.panes.values() {
                 invalidate(p.grid());
@@ -555,6 +580,7 @@ impl App {
         t.focus_row = 0;
         t.top = 0;
         t.scroll_x = 0;
+        t.filter.clear();
         t.mark();
         match root {
             None => {
@@ -1045,10 +1071,43 @@ impl App {
                 crate::grid::sync(self, pane);
                 if pane == self.active_pane {
                     self.sync_path_edit();
+                    self.sync_search_edit();
                 }
             }
         }
         invalidate(self.hwnd);
+    }
+
+    pub fn sync_search_edit(&mut self) {
+        let text = self.active_tab().and_then(|t| self.tabs.get(&t)).map(|t| t.filter.clone()).unwrap_or_default();
+        self.chrome.filter_active = !text.is_empty();
+        if get_text(self.search_edit) != text {
+            set_text(self.search_edit, &text);
+        }
+    }
+
+    /// Narrows the tab to rows whose names contain `text` ("" clears the filter).
+    pub fn set_filter(&mut self, tid: TabId, text: &str) {
+        let Some(t) = self.tabs.get_mut(&tid) else { return };
+        if t.filter == text {
+            return;
+        }
+        t.filter = text.to_string();
+        t.mark();
+        t.ensure_rows();
+        // Move focus to the first match unless it already is on one.
+        if !text.is_empty() {
+            let is_match = |id: NodeId| !id.is_placeholder() && !t.filtered.context.contains(&id);
+            if !t.focus.is_some_and(is_match) {
+                if let Some(&id) = t.rows.iter().find(|&&id| is_match(id)) {
+                    t.set_focus(id);
+                }
+            }
+        }
+        if let Some(r) = t.focus.and_then(|f| t.row_of(f)) {
+            self.scroll_into_view(tid, r);
+        }
+        self.after_change(tid);
     }
 
     pub fn sync_path_edit(&mut self) {
@@ -1250,6 +1309,14 @@ impl App {
         }
         self.status.clear();
         invalidate(self.hwnd);
+    }
+
+    /// Persistent status line for a filtered active tab.
+    pub fn filter_status(&self) -> Option<String> {
+        let t = self.active_tab().and_then(|t| self.tabs.get(&t)).filter(|t| !t.filter.is_empty())?;
+        let f = &t.filtered;
+        let hidden: usize = f.hidden.iter().map(|h| h.1).sum();
+        Some(format!("Filter \u{201C}{}\u{201D}: {} of {} items match, {} hidden \u{2014} Esc in the filter box clears it", t.filter, f.matched, f.total, hidden))
     }
 
     // ---------- Clipboard ----------

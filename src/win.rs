@@ -21,6 +21,9 @@ pub const WM_PATH_ENTER: u32 = WM_APP + 12;
 pub const WM_PATH_ESCAPE: u32 = WM_APP + 13;
 pub const WM_FOCUS_CHANGED: u32 = WM_APP + 14;
 pub const WM_REPAINT: u32 = WM_APP + 15;
+pub const WM_FILTER_CHANGED: u32 = WM_APP + 16;
+pub const WM_FILTER_ESCAPE: u32 = WM_APP + 17;
+pub const WM_FILTER_ENTER: u32 = WM_APP + 18;
 
 static MAIN: AtomicIsize = AtomicIsize::new(0);
 

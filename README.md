@@ -59,6 +59,20 @@ file operations.
   They expand in place. Right-click one to remove it. They can't be renamed, deleted, cut
   or dragged away from there.
 
+### Filter (experimental)
+
+- The filter box in the toolbar (`Ctrl+F`) narrows the focused tab to rows
+  whose names contain the text (case-insensitive). Only rows already shown are
+  searched; collapsed folders are not opened.
+- Matches are highlighted. Folders kept only because they contain a match are
+  dimmed, and an "N items hidden by the filter" row marks each folder that lost
+  items.
+- A filtered tab shows a funnel in its title, and the status bar shows the
+  match/hidden counts.
+- `Esc` (in the box or the grid) or the × button clears it; `Enter`/`Down`
+  moves to the list. Navigating the tab to another folder also clears it.
+- `Ctrl+A` and Shift-range selection skip the dimmed folders.
+
 ### Persistence
 
 - Window placement, pane layout, tabs (root, expanded folders, selection,

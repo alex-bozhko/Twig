@@ -26,6 +26,8 @@ const STATUS: i32 = 24;
 const STRIP: i32 = 34;
 const SPLIT: i32 = 6;
 const MIN_PANE: i32 = 120;
+/// Room for the funnel glyph before a filtered tab's title.
+const FUNNEL_W: i32 = 18;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Btn {
@@ -34,6 +36,7 @@ enum Btn {
     ThisPc,
     Favorites,
     Browse,
+    ClearFilter,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -78,11 +81,17 @@ struct TabDrag {
 pub struct Chrome {
     /// The path box has focus; don't overwrite what the user is typing.
     pub path_editing: bool,
+    /// The filter box has focus.
+    pub search_editing: bool,
+    /// The active tab is filtered (shows the clear button and accent border).
+    pub filter_active: bool,
     /// Tab under an OLE drag (activated after a delay).
     pub drag_hover: Option<(PaneId, usize)>,
     toolbar: RECT,
     status: RECT,
     path_rect: RECT,
+    search_rect: RECT,
+    clear_rect: RECT,
     buttons: Vec<(Btn, RECT)>,
     panes: Vec<PaneChrome>,
     splitters: Vec<Splitter>,
@@ -129,9 +138,14 @@ pub fn relayout(app: &mut App) {
     }
     x += scale(6, d);
     let browse_w = scale(84, d);
-    let path_right = (w - pad - browse_w - pad).max(x + scale(60, d));
+    let avail = (w - pad - browse_w - pad - x).max(0);
+    let search_w = scale(220, d).min(avail * 2 / 5);
+    let path_right = (x + avail - search_w - pad).max(x + scale(60, d));
     c.path_rect = rc(x, by, path_right - x, bh);
-    c.buttons.push((Btn::Browse, rc(path_right + pad, by, browse_w, bh)));
+    c.search_rect = rc(path_right + pad, by, search_w, bh);
+    let icon_w = scale(28, d);
+    c.clear_rect = rc(c.search_rect.right - icon_w, by, icon_w, bh);
+    c.buttons.push((Btn::Browse, rc(c.search_rect.right + pad, by, browse_w, bh)));
     let eh = app.fonts.ui_height + 2;
     unsafe {
         let _ = MoveWindow(
@@ -139,6 +153,14 @@ pub fn relayout(app: &mut App) {
             c.path_rect.left + scale(10, d),
             c.path_rect.top + (bh - eh) / 2,
             (c.path_rect.right - c.path_rect.left - scale(20, d)).max(0),
+            eh,
+            true,
+        );
+        let _ = MoveWindow(
+            app.search_edit,
+            c.search_rect.left + icon_w,
+            c.search_rect.top + (bh - eh) / 2,
+            (search_w - 2 * icon_w).max(0),
             eh,
             true,
         );
@@ -160,7 +182,11 @@ pub fn relayout(app: &mut App) {
         let Some(p) = app.panes.get(&pid) else { continue };
         let strip = rc(r.x, r.y, r.w, strip_h.min(r.h));
         let grid = rc(r.x, r.y + strip_h, r.w, r.h - strip_h);
-        let titles: Vec<String> = p.tabs.iter().map(|t| app.tabs.get(t).map(|t| t.title()).unwrap_or_default()).collect();
+        let titles: Vec<(String, bool)> = p
+            .tabs
+            .iter()
+            .map(|t| app.tabs.get(t).map(|t| (t.title(), !t.filter.is_empty())).unwrap_or_default())
+            .collect();
         let (tabs, plus) = layout_tabs(hdc, app.fonts.ui, d, &strip, &titles);
         panes.push(PaneChrome { pane: pid, strip, tabs, plus, grid });
         unsafe {
@@ -186,7 +212,7 @@ pub fn relayout(app: &mut App) {
     invalidate(hwnd);
 }
 
-fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[String]) -> (Vec<TabRect>, RECT) {
+fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[(String, bool)]) -> (Vec<TabRect>, RECT) {
     let top = strip.top + scale(4, d);
     let bottom = strip.bottom - 1;
     let h = (bottom - top).max(0);
@@ -196,8 +222,13 @@ fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[String]) -
     let left = strip.left + scale(4, d);
     let avail = (strip.right - left - plus_w - scale(6, d)).max(0);
     let (min_w, max_w) = (scale(90, d), scale(220, d));
-    let mut widths: Vec<i32> =
-        titles.iter().map(|t| (pad + text_width(hdc, font, t) + scale(6, d) + close + scale(6, d)).clamp(min_w, max_w)).collect();
+    let mut widths: Vec<i32> = titles
+        .iter()
+        .map(|(t, filtered)| {
+            let funnel = if *filtered { scale(FUNNEL_W, d) } else { 0 };
+            (pad + funnel + text_width(hdc, font, t) + scale(6, d) + close + scale(6, d)).clamp(min_w, max_w)
+        })
+        .collect();
     let total: i32 = widths.iter().sum();
     if total > avail && !widths.is_empty() {
         let each = (avail / widths.len() as i32).max(scale(44, d));
@@ -223,6 +254,9 @@ pub fn tab_at(app: &App, x: i32, y: i32) -> Option<(PaneId, usize)> {
 }
 
 fn hit(c: &Chrome, x: i32, y: i32) -> Option<Hot> {
+    if c.filter_active && pt_in(&c.clear_rect, x, y) {
+        return Some(Hot::Button(Btn::ClearFilter));
+    }
     if let Some((b, _)) = c.buttons.iter().find(|(_, r)| pt_in(r, x, y)) {
         return Some(Hot::Button(*b));
     }
@@ -315,6 +349,24 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     fill(hdc, &c.path_rect, pal.edit_bg);
     let border = if c.path_editing { pal.accent } else { pal.border };
     frame(hdc, &c.path_rect, border, if c.path_editing { scale(2, d).max(1) } else { 1 });
+    if c.search_rect.right > c.search_rect.left {
+        fill(hdc, &c.search_rect, pal.edit_bg);
+        let lit = c.search_editing || c.filter_active;
+        frame(hdc, &c.search_rect, if lit { pal.accent } else { pal.border }, if lit { scale(2, d).max(1) } else { 1 });
+        let icon = RECT { right: c.search_rect.left + (c.clear_rect.right - c.clear_rect.left), ..c.search_rect };
+        unsafe {
+            SelectObject(hdc, app.fonts.glyph_small);
+        }
+        draw_text(hdc, if c.filter_active { glyph::FILTER } else { glyph::SEARCH }, &icon, if c.filter_active { pal.accent } else { pal.text_dim }, DT_CENTER_V);
+        if c.filter_active {
+            let k = scale(4, d);
+            let inner = RECT { left: c.clear_rect.left + k, top: c.clear_rect.top + k, right: c.clear_rect.right - k, bottom: c.clear_rect.bottom - k };
+            if c.hot == Some(Hot::Button(Btn::ClearFilter)) {
+                fill(hdc, &inner, pal.hover);
+            }
+            draw_text(hdc, glyph::CLOSE, &inner, pal.text_dim, DT_CENTER_V);
+        }
+    }
     let line = rc(0, c.toolbar.bottom - 1, client.right, 1);
     fill(hdc, &line, pal.border);
 
@@ -344,7 +396,15 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
             } else if hovered {
                 fill(hdc, &tr.rect, pal.tab_hover);
             }
-            let text_r = RECT { left: tr.rect.left + scale(10, d), right: tr.close.left - scale(2, d), ..tr.rect };
+            let mut text_r = RECT { left: tr.rect.left + scale(10, d), right: tr.close.left - scale(2, d), ..tr.rect };
+            if !tab.filter.is_empty() {
+                let funnel = RECT { right: text_r.left + scale(FUNNEL_W, d), ..text_r };
+                unsafe {
+                    SelectObject(hdc, app.fonts.glyph_small);
+                }
+                draw_text(hdc, glyph::FILTER, &funnel, pal.accent, DT_LEFT_V);
+                text_r.left = funnel.right;
+            }
             unsafe {
                 SelectObject(hdc, app.fonts.ui);
             }
@@ -384,7 +444,15 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     unsafe {
         SelectObject(hdc, app.fonts.ui);
     }
-    draw_text(hdc, &app.status, &sr, if app.status_error { pal.error } else { pal.text_dim }, DT_LEFT_V);
+    let filter_status;
+    let (status, color) = match app.filter_status().filter(|_| app.status.is_empty()) {
+        Some(s) => {
+            filter_status = s;
+            (&filter_status, pal.accent)
+        }
+        None => (&app.status, if app.status_error { pal.error } else { pal.text_dim }),
+    };
+    draw_text(hdc, status, &sr, color, DT_LEFT_V);
 }
 
 // ---------- Drag overlay ----------
@@ -484,6 +552,7 @@ enum Deferred {
     Favorites(RECT),
     Browse,
     TabMenu(TabId, POINT),
+    Focus(HWND),
 }
 
 fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
@@ -524,7 +593,14 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
                     app.activate_pane(p);
                 }
             }
-            None => return pt_in(&app.chrome.path_rect, x, y).then_some(app.path_edit),
+            None => {
+                let c = &app.chrome;
+                return if pt_in(&c.path_rect, x, y) {
+                    Some(app.path_edit)
+                } else {
+                    pt_in(&c.search_rect, x, y).then_some(app.search_edit)
+                };
+            }
         }
         None
     })
@@ -619,6 +695,10 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
                         return Some(Deferred::Favorites(r));
                     }
                     Btn::Browse => return Some(Deferred::Browse),
+                    Btn::ClearFilter => {
+                        app.set_filter(tid, "");
+                        return app.panes.get(&app.active_pane).map(|p| Deferred::Focus(p.grid()));
+                    }
                 }
             }
             Hot::TabClose(p, i) => {
@@ -638,6 +718,9 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
     match deferred {
         Some(Deferred::Favorites(r)) => favorites_menu(hwnd, r),
         Some(Deferred::Browse) => browse(hwnd),
+        Some(Deferred::Focus(h)) => unsafe {
+            let _ = SetFocus(h);
+        },
         Some(Deferred::TabMenu(..)) | None => {}
     }
 }
@@ -891,14 +974,77 @@ pub fn create_path_edit(parent: HWND) -> HWND {
 
 fn apply_edit_font(app: &App) {
     unsafe {
-        SendMessageW(app.path_edit, WM_SETFONT, WPARAM(app.fonts.ui.0 as usize), LPARAM(1));
-        SendMessageW(app.path_edit, EM_SETMARGINS, WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize), LPARAM(0));
+        for e in [app.path_edit, app.search_edit] {
+            SendMessageW(e, WM_SETFONT, WPARAM(app.fonts.ui.0 as usize), LPARAM(1));
+            SendMessageW(e, EM_SETMARGINS, WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize), LPARAM(0));
+        }
     }
+}
+
+// ---------- Filter box ----------
+
+unsafe extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    match msg {
+        WM_KEYDOWN if wp.0 == VK_ESCAPE.0 as usize => {
+            post_main(WM_FILTER_ESCAPE);
+            return LRESULT(0);
+        }
+        WM_KEYDOWN if wp.0 == VK_RETURN.0 as usize || wp.0 == VK_DOWN.0 as usize => {
+            post_main(WM_FILTER_ENTER);
+            return LRESULT(0);
+        }
+        WM_CHAR if wp.0 == 0x0D || wp.0 == 0x1B => return LRESULT(0),
+        WM_CHAR if wp.0 == 0x01 => {
+            SendMessageW(hwnd, EM_SETSEL, WPARAM(0), LPARAM(-1));
+            return LRESULT(0);
+        }
+        WM_SETFOCUS | WM_KILLFOCUS => post_main(WM_FOCUS_CHANGED),
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(search_proc), 2);
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, msg, wp, lp)
+}
+
+pub fn create_search_edit(parent: HWND) -> HWND {
+    unsafe {
+        let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
+        let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("EDIT"), PCWSTR::null(), style, 0, 0, 0, 0, parent, None, instance(), None)
+            .unwrap_or_default();
+        let _ = SetWindowSubclass(h, Some(search_proc), 2, 0);
+        let cue = wide("Filter this tab (Ctrl+F)");
+        SendMessageW(h, EM_SETCUEBANNER, WPARAM(1), LPARAM(cue.as_ptr() as isize));
+        h
+    }
+}
+
+/// The filter box text changed (typed, pasted, or synced from a tab).
+fn on_filter_changed() {
+    with_app(|app| {
+        let Some(tid) = app.active_tab() else { return };
+        let text = get_text(app.search_edit);
+        app.set_filter(tid, &text);
+    });
+}
+
+fn on_filter_escape() {
+    with_app(|app| {
+        if let Some(tid) = app.active_tab() {
+            app.set_filter(tid, "");
+        }
+    });
+    focus_active_grid();
 }
 
 fn on_focus_changed() {
     with_app(|app| unsafe {
         let f = GetFocus();
+        let searching = f == app.search_edit;
+        if app.chrome.search_editing != searching {
+            app.chrome.search_editing = searching;
+            invalidate(app.hwnd);
+        }
         if f == app.path_edit {
             if !app.chrome.path_editing {
                 app.chrome.path_editing = true;
@@ -1019,8 +1165,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         app.set_dark(dark);
                         EDIT_COLORS.set((app.pal.text, app.pal.edit_bg));
                         crate::theme::set_control_theme(app.path_edit, dark, "DarkMode_CFD");
+                        crate::theme::set_control_theme(app.search_edit, dark, "DarkMode_CFD");
                         app.invalidate_grids();
                         invalidate(app.path_edit);
+                        invalidate(app.search_edit);
                         invalidate(hwnd);
                     }
                 });
@@ -1055,6 +1203,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_PATH_ESCAPE => {
             on_path_escape();
+            return LRESULT(0);
+        }
+        WM_COMMAND => {
+            if (wp.0 >> 16) as u32 == EN_CHANGE {
+                // Sent synchronously (possibly while the state is borrowed): handle it later.
+                // on_filter_changed is a no-op unless the filter box text differs from the tab.
+                post(hwnd, WM_FILTER_CHANGED, 0, 0);
+                return LRESULT(0);
+            }
+        }
+        WM_FILTER_CHANGED => {
+            on_filter_changed();
+            return LRESULT(0);
+        }
+        WM_FILTER_ESCAPE => {
+            on_filter_escape();
+            return LRESULT(0);
+        }
+        WM_FILTER_ENTER => {
+            focus_active_grid();
             return LRESULT(0);
         }
         WM_TIMER => {
@@ -1225,6 +1393,8 @@ pub fn init_chrome() {
         apply_edit_font(app);
         EDIT_COLORS.set((app.pal.text, app.pal.edit_bg));
         crate::theme::set_control_theme(app.path_edit, app.dark, "DarkMode_CFD");
+        crate::theme::set_control_theme(app.search_edit, app.dark, "DarkMode_CFD");
+        app.sync_search_edit();
         relayout(app);
         unsafe {
             let _ = AddClipboardFormatListener(app.hwnd);
@@ -1291,6 +1461,17 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
         0x4C if !sh => {
             // Ctrl+L
             let edit = with_app(|app| app.path_edit);
+            if let Some(e) = edit {
+                unsafe {
+                    let _ = SetFocus(e);
+                    SendMessageW(e, EM_SETSEL, WPARAM(0), LPARAM(-1));
+                }
+            }
+            true
+        }
+        0x46 if !sh => {
+            // Ctrl+F: filter the active tab.
+            let edit = with_app(|app| app.search_edit);
             if let Some(e) = edit {
                 unsafe {
                     let _ = SetFocus(e);

@@ -203,6 +203,20 @@ pub fn extension_lower(name: &str) -> String {
     extension_start(name).map(|i| name[i..].to_lowercase()).unwrap_or_default()
 }
 
+/// Case-insensitive substring search. Returns the byte range of the first match in `hay`.
+pub fn find_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
+    let needle: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
+    if needle.is_empty() {
+        return None;
+    }
+    // Lower-cased chars of `hay`, each with the byte range of the original char it came from.
+    let low: Vec<(char, usize, usize)> =
+        hay.char_indices().flat_map(|(i, c)| c.to_lowercase().map(move |l| (l, i, i + c.len_utf8()))).collect();
+    low.windows(needle.len())
+        .find(|w| w.iter().zip(&needle).all(|(a, b)| a.0 == *b))
+        .map(|w| (w[0].1, w[w.len() - 1].2))
+}
+
 /// Type-to-search: find the index of the next item matching `buffer`.
 /// `names` is the search scope, `current` the index of the focused item within it.
 /// Repeating a single character cycles through items starting with that character.
@@ -312,5 +326,15 @@ mod tests {
         assert_eq!(type_search(&names, Some(0), "ba"), Some(4));
         assert_eq!(type_search(&names, Some(1), "ban"), Some(4));
         assert_eq!(type_search(&names, Some(1), "z"), None);
+    }
+
+    #[test]
+    fn find_case_insensitive() {
+        assert_eq!(find_ci("Report.TXT", "port"), Some((2, 6)));
+        assert_eq!(find_ci("Report.TXT", ".txt"), Some((6, 10)));
+        assert_eq!(find_ci("Report.TXT", "REP"), Some((0, 3)));
+        assert_eq!(find_ci("ÄrgerÖl", "rgerö"), Some((2, 8)));
+        assert_eq!(find_ci("abc", "abcd"), None);
+        assert_eq!(find_ci("abc", ""), None);
     }
 }

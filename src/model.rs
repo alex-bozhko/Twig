@@ -1,8 +1,8 @@
 //! Tree model for one tab: a generational arena of nodes with sorting, merging and flattening.
 
-use crate::util::{natural_cmp, normalize_path, path_key};
+use crate::util::{find_ci, natural_cmp, normalize_path, path_key};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -14,6 +14,33 @@ pub struct NodeId {
 impl NodeId {
     /// Placeholder row (a section header) that never resolves to a node.
     pub const SECTION: NodeId = NodeId { idx: u32::MAX, gen: u32::MAX };
+
+    /// Placeholder row standing for the `i`-th group of items hidden by a filter.
+    pub fn hidden_marker(i: u32) -> NodeId {
+        NodeId { idx: u32::MAX - 1, gen: i }
+    }
+
+    pub fn as_hidden_marker(self) -> Option<usize> {
+        (self.idx == u32::MAX - 1).then_some(self.gen as usize)
+    }
+
+    /// A row that is not a node (section header or hidden-items marker).
+    pub fn is_placeholder(self) -> bool {
+        self.idx >= u32::MAX - 1
+    }
+}
+
+/// The visible rows of a tree narrowed by a name filter.
+#[derive(Default, Debug)]
+pub struct Filtered {
+    /// Kept nodes in display order, with a hidden marker after each group that lost items.
+    pub rows: Vec<NodeId>,
+    /// Kept only because they lead to a match (or are an open root).
+    pub context: HashSet<NodeId>,
+    /// (depth, count) for each hidden marker, indexed by `NodeId::as_hidden_marker`.
+    pub hidden: Vec<(u16, usize)>,
+    pub matched: usize,
+    pub total: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -544,6 +571,70 @@ impl Tree {
         out
     }
 
+    /// Visible rows narrowed to names containing `query` (case-insensitive). Only rows that are
+    /// already visible are searched; collapsed folders are not looked into. Ancestors of matches
+    /// stay as context, as do expanded roots (so a folder tab keeps its header row).
+    pub fn filtered(&self, query: &str) -> Filtered {
+        let visible = self.visible();
+        let mut f = Filtered { total: visible.len(), ..Default::default() };
+        let mut kept = HashSet::new();
+        // Reverse pre-order visits children before their parents.
+        for &id in visible.iter().rev() {
+            let Some(n) = self.get(id) else { continue };
+            let hit = find_ci(&n.name, query).is_some();
+            let open_root = n.parent.is_none() && n.expanded;
+            if hit || open_root || kept.contains(&id) {
+                if hit {
+                    f.matched += 1;
+                } else {
+                    f.context.insert(id);
+                }
+                kept.insert(id);
+                if let Some(p) = n.parent {
+                    kept.insert(p);
+                }
+            }
+        }
+        self.emit_filtered(&self.roots, 0, &kept, &mut f);
+        f
+    }
+
+    fn emit_filtered(&self, ids: &[NodeId], depth: u16, kept: &HashSet<NodeId>, f: &mut Filtered) {
+        let mut hidden = 0;
+        for &id in ids {
+            let Some(n) = self.get(id) else { continue };
+            if !kept.contains(&id) {
+                hidden += 1;
+                continue;
+            }
+            f.rows.push(id);
+            if n.expanded {
+                if let Some(ch) = &n.children {
+                    self.emit_filtered(ch, depth + 1, kept, f);
+                }
+            }
+        }
+        if hidden > 0 {
+            f.rows.push(NodeId::hidden_marker(f.hidden.len() as u32));
+            f.hidden.push((depth, hidden));
+        }
+    }
+
+    /// Type-to-search scope: the children of an expanded focused folder, otherwise its siblings
+    /// (the roots without focus) — limited to the rows actually `shown`.
+    pub fn search_scope(&self, focus: Option<NodeId>, shown: &[NodeId]) -> Vec<NodeId> {
+        let shown: HashSet<NodeId> = shown.iter().copied().collect();
+        let pick = |ids: &[NodeId]| ids.iter().copied().filter(|id| shown.contains(id)).collect::<Vec<_>>();
+        let Some((f, n)) = focus.and_then(|f| self.get(f).map(|n| (f, n))) else { return pick(&self.roots) };
+        if n.expanded {
+            let ch = pick(self.children(f));
+            if !ch.is_empty() {
+                return ch;
+            }
+        }
+        pick(self.siblings(f))
+    }
+
     /// Finds a loaded node by full path (case-insensitive). When the path is loaded more than once
     /// (a favorite root also reachable through its drive), a visible copy is preferred.
     pub fn find_path(&self, path: &str) -> Option<NodeId> {
@@ -584,7 +675,7 @@ impl Tree {
     }
 
     /// True if every ancestor of the node is expanded.
-    fn is_shown(&self, mut id: NodeId) -> bool {
+    pub fn is_shown(&self, mut id: NodeId) -> bool {
         while let Some(p) = self.get(id).and_then(|n| n.parent) {
             if !self.get(p).is_some_and(|n| n.expanded) {
                 return false;
@@ -857,5 +948,92 @@ mod tests {
         let fresh = t.add_root(entry("n", Kind::Dir, 0));
         assert!(t.get(root).is_none());
         assert!(t.get(fresh).is_some());
+    }
+
+    /// r/{docs/{report.txt, notes.md, old/{report_old.txt}}, pics/{report.png}, readme.txt, todo.txt}
+    /// with r and docs expanded; old and pics collapsed but loaded.
+    fn filter_tree() -> (Tree, NodeId) {
+        let (mut t, root) = root_tree();
+        t.merge_children(root, vec![entry("docs", Kind::Dir, 0), entry("pics", Kind::Dir, 0), entry("readme.txt", Kind::File, 1), entry("todo.txt", Kind::File, 2)]);
+        let ch = t.children(root).to_vec();
+        let (docs, pics) = (ch[0], ch[1]);
+        t.merge_children(docs, vec![entry("report.txt", Kind::File, 1), entry("notes.md", Kind::File, 2), entry("old", Kind::Dir, 0)]);
+        let old = t.children(docs).iter().copied().find(|&i| t.get(i).unwrap().name == "old").unwrap();
+        t.merge_children(old, vec![entry("report_old.txt", Kind::File, 1)]);
+        t.merge_children(pics, vec![entry("report.png", Kind::File, 1)]);
+        t.get_mut(docs).unwrap().expanded = true;
+        (t, root)
+    }
+
+    fn by_name(t: &Tree, name: &str) -> NodeId {
+        t.visible().into_iter().find(|&i| t.get(i).unwrap().name == name).unwrap()
+    }
+
+    /// Row labels with hidden markers as "~depth:count".
+    fn labels(t: &Tree, f: &Filtered) -> Vec<String> {
+        f.rows
+            .iter()
+            .map(|&id| match id.as_hidden_marker() {
+                Some(i) => format!("~{}:{}", f.hidden[i].0, f.hidden[i].1),
+                None => t.get(id).unwrap().name.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn filter_keeps_matches_and_their_ancestors() {
+        let (t, root) = filter_tree();
+        let f = t.filtered("REPORT");
+        // pics is collapsed, so its report.png is not searched; old likewise.
+        assert_eq!(labels(&t, &f), vec!["r", "docs", "report.txt", "~2:2", "~1:3"]);
+        assert_eq!((f.matched, f.total), (1, 8));
+        assert!(f.context.contains(&root) && f.context.contains(&by_name(&t, "docs")));
+        assert!(!f.context.contains(&by_name(&t, "report.txt")));
+        assert!(f.rows.iter().all(|&id| id.is_placeholder() == id.as_hidden_marker().is_some()));
+    }
+
+    #[test]
+    fn filter_matching_folder_is_not_context() {
+        let (t, _) = filter_tree();
+        let f = t.filtered("doc");
+        assert_eq!(labels(&t, &f), vec!["r", "docs", "~2:3", "~1:3"]);
+        assert!(!f.context.contains(&by_name(&t, "docs")));
+    }
+
+    #[test]
+    fn filter_without_matches_leaves_open_root_and_marker() {
+        let (mut t, _) = filter_tree();
+        t.add_root(entry("zz", Kind::Dir, 0));
+        let f = t.filtered("nothing");
+        assert_eq!(labels(&t, &f), vec!["r", "~1:4", "~0:1"]);
+        assert_eq!(f.matched, 0);
+    }
+
+    #[test]
+    fn type_ahead_scope_follows_shown_rows() {
+        let (t, _) = filter_tree();
+        let pick = |scope: &[NodeId], focus: Option<NodeId>, buf: &str| {
+            let names: Vec<&str> = scope.iter().map(|&i| t.get(i).unwrap().name.as_str()).collect();
+            let cur = focus.and_then(|f| scope.iter().position(|&i| i == f));
+            crate::util::type_search(&names, cur, buf).map(|i| t.get(scope[i]).unwrap().name.clone())
+        };
+        let docs = by_name(&t, "docs");
+        let readme = by_name(&t, "readme.txt");
+        // Unfiltered: an expanded focused folder searches its children, a file its siblings.
+        let all = t.visible();
+        assert_eq!(names(&t, &t.search_scope(Some(docs), &all)), vec!["old", "notes.md", "report.txt"]);
+        let scope = t.search_scope(Some(readme), &all);
+        assert_eq!(names(&t, &scope), vec!["docs", "pics", "readme.txt", "todo.txt"]);
+        assert_eq!(pick(&scope, Some(readme), "p").as_deref(), Some("pics"));
+        assert_eq!(pick(&scope, Some(readme), "t").as_deref(), Some("todo.txt"));
+        // Filtered: hidden rows can't be jumped to.
+        let f = t.filtered(".txt");
+        let scope = t.search_scope(Some(readme), &f.rows);
+        assert_eq!(names(&t, &scope), vec!["docs", "readme.txt", "todo.txt"]);
+        assert_eq!(pick(&scope, Some(readme), "p"), None);
+        assert_eq!(pick(&scope, Some(readme), "t").as_deref(), Some("todo.txt"));
+        assert_eq!(names(&t, &t.search_scope(Some(docs), &f.rows)), vec!["report.txt"]);
+        // No focus: shown roots.
+        assert_eq!(names(&t, &t.search_scope(None, &f.rows)), vec!["r"]);
     }
 }

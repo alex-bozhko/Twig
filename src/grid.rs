@@ -623,6 +623,12 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
             draw_section(hdc, &m, sx, y, w, glyph_small, font, &pal, "Favorites");
             continue;
         }
+        if let Some(&(depth, count)) = id.as_hidden_marker().and_then(|k| t.filtered.hidden.get(k)) {
+            let tx = m.text_x(sx, depth);
+            let label = if count == 1 { "1 item hidden by the filter".to_string() } else { format!("{count} items hidden by the filter") };
+            draw_text(hdc, &label, &rc(tx, y, (w - tx - m.pad).max(0), m.row), pal.text_dim, DT_LEFT_V);
+            continue;
+        }
         let Some(n) = t.tree.get(id) else { continue };
         let row = rc(0, y, w, m.row);
         let bg = if n.selected {
@@ -640,7 +646,8 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         } else if focused && t.focus == Some(id) && !n.selected {
             frame(hdc, &row, pal.border, 1);
         }
-        let dim = n.is_hidden() || cut.is_some_and(|c| c.contains(&path_key(&n.path)));
+        let context = t.filtered.context.contains(&id);
+        let dim = context || n.is_hidden() || cut.is_some_and(|c| c.contains(&path_key(&n.path)));
         let color = if dim { pal.text_dim } else { pal.text };
 
         // Name cell, clipped to the column.
@@ -666,6 +673,13 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         }
         if renaming != Some(id) {
             let tx = m.text_x(sx, n.depth);
+            if !context {
+                if let Some((a, b)) = find_ci(&n.name, &t.filter) {
+                    let hx = tx + text_width(hdc, font, &n.name[..a]);
+                    let hw = text_width(hdc, font, &n.name[a..b]);
+                    wash(hdc, &rc(hx, y + m.row / 6, hw, m.row - m.row / 3), pal.accent, 90);
+                }
+            }
             draw_text(hdc, &n.name, &rc(tx, y, -sx + m.cols[0] - m.pad - tx, m.row), color, DT_LEFT_V);
         }
         unsafe {
@@ -720,7 +734,9 @@ fn select_range(t: &mut Tab, to: NodeId, add: bool) {
     }
     for i in a.min(b)..=a.max(b) {
         let id = t.rows[i];
-        t.tree.set_selected(id, true);
+        if id == to || !t.filtered.context.contains(&id) {
+            t.tree.set_selected(id, true);
+        }
     }
     t.set_focus(to);
 }
@@ -731,10 +747,14 @@ fn move_to(app: &mut App, tid: TabId, row: usize) {
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
     let mut row = row;
-    if t.rows.get(row) == Some(&NodeId::SECTION) {
-        // Step over the section header in the direction of travel.
+    if t.rows.get(row).is_some_and(|id| id.is_placeholder()) {
+        // Step over header/marker rows in the direction of travel, else back the other way.
         let down = t.focus.and_then(|f| t.row_of(f)).map_or(true, |cur| cur < row);
-        row = if down || row == 0 { row + 1 } else { row - 1 };
+        let real = |i: &usize| !t.rows[*i].is_placeholder();
+        let ahead = if down { (row + 1..t.rows.len()).find(real) } else { (0..row).rev().find(real) };
+        let behind = if down { (0..row).rev().find(real) } else { (row + 1..t.rows.len()).find(real) };
+        let Some(r) = ahead.or(behind) else { return };
+        row = r;
     }
     let Some(&id) = t.rows.get(row) else { return };
     if s {
@@ -1250,13 +1270,14 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
             if nd.expandable() && !nd.expanded {
                 app.expand(tid, id);
             } else if nd.expanded {
-                if let Some(&first) = t.tree.children(id).first() {
-                    if let Some(r) = t.row_of(first) {
-                        move_to(app, tid, r);
-                    }
+                // The first child still shown (the filter may hide some).
+                let kids = t.tree.children(id).to_vec();
+                if let Some(r) = kids.into_iter().find_map(|c| t.row_of(c)) {
+                    move_to(app, tid, r);
                 }
             }
         }
+        VK_ESCAPE if !t.filter.is_empty() => app.set_filter(tid, ""),
         VK_RETURN | VK_F2 => begin_rename(app, pane, focus?),
         VK_F5 => app.refresh_tab(tid),
         VK_DELETE => {
@@ -1271,8 +1292,11 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
             app.after_change(tid);
         }
         k if c && k.0 == b'A' as u16 => {
+            // Dimmed filter context (ancestors of matches) is never bulk-selected.
             for &id in &t.rows {
-                t.tree.set_selected(id, true);
+                if !t.filtered.context.contains(&id) {
+                    t.tree.set_selected(id, true);
+                }
             }
             app.after_change(tid);
         }
@@ -1295,11 +1319,8 @@ fn type_search_char(app: &mut App, pane: PaneId, ch: char) {
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     if fresh {
         ui.search.clear();
-        ui.search_scope = match t.focus.and_then(|f| t.tree.get(f).map(|n| (f, n.expanded))) {
-            Some((f, true)) if !t.tree.children(f).is_empty() => t.tree.children(f).to_vec(),
-            Some((f, _)) => t.tree.siblings(f).to_vec(),
-            None => t.tree.roots.clone(),
-        };
+        t.ensure_rows();
+        ui.search_scope = t.tree.search_scope(t.focus, &t.rows);
     }
     ui.search.push(ch);
     ui.search_scope.retain(|&id| t.tree.exists(id));

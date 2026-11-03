@@ -141,6 +141,8 @@ pub mod glyph {
     pub const CHEVRON_DOWN: &str = "\u{E70D}";
     pub const CLOSE: &str = "\u{E8BB}";
     pub const ADD: &str = "\u{E710}";
+    pub const SEARCH: &str = "\u{E721}";
+    pub const FILTER: &str = "\u{E71C}";
 }
 
 /// Reads the "apps use light theme" preference.
