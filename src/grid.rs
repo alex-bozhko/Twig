@@ -66,6 +66,10 @@ pub struct GridUi {
     search_at: Option<Instant>,
     search_scope: Vec<NodeId>,
     hover: Option<(PaneId, usize)>,
+    /// Hovered breadcrumb segment or Up button.
+    bar_hover: Option<(PaneId, BarHot)>,
+    /// The last click navigated via the breadcrumb/Up; its double-click must not hit the new layout.
+    swallow_dbl: bool,
     /// Current drag-and-drop target row.
     pub drop: Option<(PaneId, NodeId)>,
     /// (pane, column, start x, start width at 96 DPI)
@@ -121,8 +125,130 @@ pub enum Hit {
     Divider(usize),
     Header(usize),
     Row { row: usize, node: NodeId, chevron: bool },
+    /// Breadcrumb segment `index`; `target` None = This PC.
+    Crumb { index: usize, target: Option<String> },
+    /// The Up button on the pinned root row.
+    Up,
     Empty,
     Nothing,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BarHot {
+    Crumb(usize),
+    Up,
+}
+
+/// Vertical layout: breadcrumb bar (zoomed only), column header, pinned root row, scrolling rows.
+pub struct Geo {
+    crumb: i32,
+    header_y: i32,
+    body: i32,
+    pin: usize,
+    scroll_y: i32,
+    row: i32,
+}
+
+impl Geo {
+    /// Call after `t.ensure_rows()`.
+    fn of(m: &Metrics, t: &Tab) -> Geo {
+        let crumb = if t.zoomed() { m.header } else { 0 };
+        let pin = t.pinned();
+        let body = crumb + m.header;
+        Geo { crumb, header_y: crumb, body, pin, scroll_y: body + pin as i32 * m.row, row: m.row }
+    }
+    /// Top edge of row `i`, if it is laid out (pinned or at/after `top`).
+    fn row_y(&self, i: usize, top: usize) -> Option<i32> {
+        if i < self.pin {
+            Some(self.body + i as i32 * self.row)
+        } else if i >= top {
+            Some(self.scroll_y + (i - top) as i32 * self.row)
+        } else {
+            None
+        }
+    }
+    /// Row index under `y` (which must be at or below `body`).
+    fn row_at(&self, y: i32, top: usize) -> usize {
+        if y < self.scroll_y {
+            ((y - self.body) / self.row) as usize
+        } else {
+            top + ((y - self.scroll_y) / self.row) as usize
+        }
+    }
+}
+
+/// Top of the scrolling rows in `pane` (below the header and any pinned row).
+pub fn scroll_area_top(app: &mut App, pane: PaneId) -> i32 {
+    let m = metrics(app);
+    match active_tid(app, pane).and_then(|t| app.tabs.get_mut(&t)) {
+        Some(t) => {
+            t.ensure_rows();
+            Geo::of(&m, t).scroll_y
+        }
+        None => m.header,
+    }
+}
+
+/// Rows that fit in `pane`'s scrolling area for its active tab's current layout.
+pub fn scroll_view_rows(app: &mut App, pane: PaneId) -> usize {
+    let m = metrics(app);
+    let h = client_rect(app.panes[&pane].grid()).bottom;
+    ((h - scroll_area_top(app, pane)) / m.row).max(1) as usize
+}
+
+/// Width of the Up button at the right end of the pinned root row.
+fn up_button(m: &Metrics, w: i32, y: i32) -> RECT {
+    rc(w - m.row - m.pad, y, m.row + m.pad, m.row)
+}
+
+/// One breadcrumb segment, laid out left to right.
+struct Crumb {
+    x: i32,
+    w: i32,
+    label: String,
+    /// None = not clickable (current folder or elided "…"); Some(None) = This PC.
+    target: Option<Option<String>>,
+}
+
+/// Lays out the breadcrumb for `path` within width `w`; elides leading folders when it doesn't fit.
+fn crumb_layout(app: &App, hdc: HDC, path: &str, w: i32) -> Vec<Crumb> {
+    let m = metrics(app);
+    let font = app.fonts.ui;
+    let sep = scale(14, app.dpi);
+    let mut segs: Vec<(String, Option<String>)> = crumbs(path).into_iter().map(|(l, p)| (l, Some(p))).collect();
+    if let Some(last) = segs.last_mut() {
+        last.1 = None;
+    }
+    let seg_w = |s: &str| text_width(hdc, font, s) + 2 * m.pad;
+    let pc_w = m.chev + 2 * m.pad;
+    let need = |segs: &[(String, Option<String>)], elided: bool| {
+        pc_w + segs.iter().map(|(l, _)| sep + seg_w(l)).sum::<i32>() + if elided { sep + seg_w("\u{2026}") } else { 0 }
+    };
+    let mut elided = false;
+    while segs.len() > 1 && need(&segs, elided) > w - m.pad {
+        segs.remove(0);
+        elided = true;
+    }
+    let mut out = vec![Crumb { x: m.pad / 2, w: pc_w, label: glyph::THIS_PC.to_string(), target: Some(None) }];
+    let mut x = m.pad / 2 + pc_w;
+    if elided {
+        x += sep;
+        let ew = seg_w("\u{2026}");
+        out.push(Crumb { x, w: ew, label: "\u{2026}".into(), target: None });
+        x += ew;
+    }
+    for (label, target) in segs {
+        x += sep;
+        let sw = seg_w(&label);
+        out.push(Crumb { x, w: sw, label, target: target.map(Some) });
+        x += sw;
+    }
+    out
+}
+
+fn tab_crumbs(app: &App, pane: PaneId, hdc: HDC, w: i32) -> Vec<Crumb> {
+    let root = active_tid(app, pane).and_then(|t| app.tabs.get(&t)).and_then(|t| t.root.clone());
+    root.map(|r| crumb_layout(app, hdc, &r, w)).unwrap_or_default()
 }
 
 enum Deferred {
@@ -276,8 +402,9 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         }
         WM_MOUSELEAVE => {
             with_app(|app| {
-                if app.grid_ui.hover.is_some_and(|h| h.0 == pane) {
+                if app.grid_ui.hover.is_some_and(|h| h.0 == pane) || app.grid_ui.bar_hover.is_some_and(|h| h.0 == pane) {
                     app.grid_ui.hover = None;
+                    app.grid_ui.bar_hover = None;
                     invalidate(hwnd);
                 }
             });
@@ -376,28 +503,29 @@ pub fn sync(app: &mut App, pane: PaneId) {
     let m = metrics(app);
     let r = client_rect(hwnd);
     let (w, h) = (r.right - r.left, r.bottom - r.top);
-    let view = ((h - m.header) / m.row).max(1) as usize;
+    let (n, top, sx, pin, view) = match tid.and_then(|t| app.tabs.get_mut(&t)) {
+        Some(t) => {
+            t.ensure_rows();
+            let geo = Geo::of(&m, t);
+            let view = ((h - geo.scroll_y) / m.row).max(1) as usize;
+            let n = if t.error.is_some() { 0 } else { t.rows.len() };
+            t.top = t.top.min(n.saturating_sub(view)).max(geo.pin);
+            t.scroll_x = t.scroll_x.clamp(0, (m.total() - w).max(0));
+            (n, t.top, t.scroll_x, geo.pin, view)
+        }
+        None => (0, 0, 0, 0, ((h - m.header) / m.row).max(1) as usize),
+    };
     if let Some(p) = app.panes.get_mut(&pane) {
         p.view_rows = view;
     }
-    let (n, top, sx) = match tid.and_then(|t| app.tabs.get_mut(&t)) {
-        Some(t) => {
-            t.ensure_rows();
-            let n = if t.error.is_some() { 0 } else { t.rows.len() };
-            t.top = t.top.min(n.saturating_sub(view));
-            t.scroll_x = t.scroll_x.clamp(0, (m.total() - w).max(0));
-            (n, t.top, t.scroll_x)
-        }
-        None => (0, 0, 0),
-    };
     unsafe {
         let mut si = SCROLLINFO {
             cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
             fMask: SIF_ALL,
             nMin: 0,
-            nMax: (n as i32 - 1).max(0),
+            nMax: (n as i32 - pin as i32 - 1).max(0),
             nPage: view as u32,
-            nPos: top as i32,
+            nPos: (top - pin) as i32,
             nTrackPos: 0,
         };
         SetScrollInfo(hwnd, SB_VERT, &si, true);
@@ -438,13 +566,15 @@ fn on_vscroll(app: &mut App, pane: PaneId, hwnd: HWND, code: i32) {
     let Some(tid) = active_tid(app, pane) else { return };
     let view = app.panes[&pane].view_rows as i64;
     let Some(t) = app.tabs.get_mut(&tid) else { return };
+    t.ensure_rows();
+    let pin = t.pinned() as i64;
     let top = t.top as i64;
     let new = match code {
         c if c == SB_LINEUP.0 => top - 1,
         c if c == SB_LINEDOWN.0 => top + 1,
         c if c == SB_PAGEUP.0 => top - view,
         c if c == SB_PAGEDOWN.0 => top + view,
-        c if c == SB_THUMBTRACK.0 || c == SB_THUMBPOSITION.0 => track_pos(hwnd, SB_VERT) as i64,
+        c if c == SB_THUMBTRACK.0 || c == SB_THUMBPOSITION.0 => track_pos(hwnd, SB_VERT) as i64 + pin,
         c if c == SB_TOP.0 => 0,
         c if c == SB_BOTTOM.0 => i64::MAX / 2,
         _ => return,
@@ -510,7 +640,25 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
     let slop = scale(4, app.dpi);
     let Some(tid) = active_tid(app, pane) else { return Hit::Nothing };
     let Some(t) = app.tabs.get_mut(&tid) else { return Hit::Nothing };
-    if y < m.header {
+    t.ensure_rows();
+    let geo = Geo::of(&m, t);
+    if y < geo.crumb {
+        let hwnd = app.panes[&pane].grid();
+        let w = client_rect(hwnd).right;
+        let crumbs = unsafe {
+            let hdc = GetDC(hwnd);
+            let c = tab_crumbs(app, pane, hdc, w);
+            ReleaseDC(hwnd, hdc);
+            c
+        };
+        return crumbs
+            .into_iter()
+            .enumerate()
+            .find(|(_, c)| x >= c.x && x < c.x + c.w)
+            .and_then(|(index, c)| c.target.map(|target| Hit::Crumb { index, target }))
+            .unwrap_or(Hit::Nothing);
+    }
+    if y < geo.body {
         let mut edge = -t.scroll_x;
         for (c, w) in m.cols.iter().enumerate() {
             edge += w;
@@ -530,10 +678,16 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
     if t.error.is_some() {
         return Hit::Nothing;
     }
-    t.ensure_rows();
-    let row = t.top + ((y - m.header) / m.row) as usize;
+    let row = geo.row_at(y, t.top);
     let Some(&node) = t.rows.get(row) else { return Hit::Empty };
     let Some(n) = t.tree.get(node) else { return Hit::Empty };
+    if row < geo.pin {
+        let w = client_rect(app.panes[&pane].grid()).right;
+        let up = up_button(&m, w, geo.row_y(row, t.top).unwrap_or(0));
+        if x >= up.left && x < up.right {
+            return Hit::Up;
+        }
+    }
     let cx = m.chevron_x(t.scroll_x, n.depth);
     let chevron = n.expandable() && x >= cx && x < cx + m.chev;
     Hit::Row { row, node, chevron }
@@ -579,30 +733,60 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let renaming = app.grid_ui.rename.as_ref().filter(|rn| rn.tab == tid).map(|rn| rn.node);
     let view = app.panes[&pane].view_rows;
     let cut = app.cut.as_ref().map(|(_, set)| set);
+    let bar_hover = app.grid_ui.bar_hover.filter(|h| h.0 == pane).map(|h| h.1);
+    let crumbs = if app.tabs.get(&tid).is_some_and(|t| t.zoomed()) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
+    let geo = Geo::of(&m, t);
     let w = r.right;
     let sx = t.scroll_x;
 
     unsafe {
         SelectObject(hdc, font);
     }
+    // Breadcrumb (zoomed into a folder).
+    if geo.crumb > 0 {
+        fill(hdc, &rc(0, geo.crumb - 1, w, 1), pal.border);
+        let sep = scale(14, app.dpi);
+        let last = crumbs.len().saturating_sub(1);
+        for (i, c) in crumbs.iter().enumerate() {
+            let cr = rc(c.x, scale(3, app.dpi), c.w, geo.crumb - scale(7, app.dpi));
+            if c.target.is_some() && bar_hover == Some(BarHot::Crumb(i)) {
+                fill(hdc, &cr, pal.hover);
+            }
+            let color = if i == last { pal.text } else { pal.text_dim };
+            if i > 0 {
+                unsafe {
+                    SelectObject(hdc, glyph_small);
+                }
+                draw_text(hdc, glyph::CHEVRON_RIGHT, &rc(c.x - sep, 0, sep, geo.crumb), pal.text_dim, DT_CENTER_V);
+            }
+            unsafe {
+                SelectObject(hdc, if i == 0 { glyph_small } else { font });
+            }
+            draw_text(hdc, &c.label, &rc(c.x, 0, c.w, geo.crumb), color, DT_CENTER_V);
+        }
+        unsafe {
+            SelectObject(hdc, font);
+        }
+    }
     // Header.
-    fill(hdc, &rc(0, 0, w, m.header), pal.toolbar);
-    fill(hdc, &rc(0, m.header - 1, w, 1), pal.border);
+    let hy = geo.header_y;
+    fill(hdc, &rc(0, hy, w, m.header), pal.toolbar);
+    fill(hdc, &rc(0, hy + m.header - 1, w, 1), pal.border);
     let mut x0 = -sx;
     let sort_col = t.tree.sort.column();
     for (c, title) in TITLES.iter().enumerate() {
         let cw = m.cols[c];
         let flags = if c == 3 { DT_RIGHT_V } else { DT_LEFT_V };
-        draw_text(hdc, title, &rc(x0 + m.pad, 0, cw - 2 * m.pad, m.header), pal.text, flags);
-        fill(hdc, &rc(x0 + cw - 1, m.header / 4, 1, m.header / 2), pal.border);
+        draw_text(hdc, title, &rc(x0 + m.pad, hy, cw - 2 * m.pad, m.header), pal.text, flags);
+        fill(hdc, &rc(x0 + cw - 1, hy + m.header / 4, 1, m.header / 2), pal.border);
         if c == sort_col {
             unsafe {
                 SelectObject(hdc, glyph_small);
             }
             let g = if t.tree.desc { glyph::CHEVRON_DOWN } else { CHEVRON_UP };
-            draw_text(hdc, g, &rc(x0, 0, cw, scale(10, app.dpi)), pal.text_dim, DT_CENTER_V);
+            draw_text(hdc, g, &rc(x0, hy, cw, scale(10, app.dpi)), pal.text_dim, DT_CENTER_V);
             unsafe {
                 SelectObject(hdc, font);
             }
@@ -611,14 +795,15 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     }
 
     if let Some(err) = &t.error {
-        draw_text(hdc, err, &rc(0, m.header, w, m.row * 3), pal.error, DT_CENTER_V);
+        draw_text(hdc, err, &rc(0, geo.body, w, m.row * 3), pal.error, DT_CENTER_V);
         return;
     }
 
     let last = (t.top + view + 1).min(t.rows.len());
-    for i in t.top..last {
+    for i in (0..geo.pin).chain(t.top..last) {
         let id = t.rows[i];
-        let y = m.header + (i - t.top) as i32 * m.row;
+        let Some(y) = geo.row_y(i, t.top) else { continue };
+        let pinned = i < geo.pin;
         if id == NodeId::SECTION {
             draw_section(hdc, &m, sx, y, w, glyph_small, font, &pal, "Favorites");
             continue;
@@ -648,6 +833,12 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         };
         if bg != pal.bg {
             fill(hdc, &row, bg);
+        } else if pinned {
+            wash(hdc, &row, pal.accent, 24);
+        }
+        if pinned {
+            fill(hdc, &rc(0, y, scale(3, app.dpi), m.row), pal.accent);
+            fill(hdc, &rc(0, geo.scroll_y - 1, w, 1), pal.border);
         }
         if drop == Some(id) {
             frame(hdc, &row, pal.accent, 1);
@@ -703,6 +894,21 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         cx += m.cols[1];
         draw_text(hdc, &n.type_name, &rc(cx + m.pad, y, m.cols[2] - 2 * m.pad, m.row), color, DT_LEFT_V);
         cx += m.cols[2];
+        if pinned {
+            let up = up_button(&m, w, y);
+            fill(hdc, &up, if bar_hover == Some(BarHot::Up) { pal.hover } else { bg });
+            if bg == pal.bg && bar_hover != Some(BarHot::Up) {
+                wash(hdc, &up, pal.accent, 24);
+            }
+            unsafe {
+                SelectObject(hdc, glyph_small);
+            }
+            draw_text(hdc, glyph::UP, &up, pal.text, DT_CENTER_V);
+            unsafe {
+                SelectObject(hdc, font);
+            }
+            continue;
+        }
         let size = match n.kind {
             Kind::File | Kind::Zip | Kind::ZipFile => format_size(n.size),
             Kind::Drive if n.size > 0 => format_size(n.size),
@@ -883,8 +1089,19 @@ fn paste(app: &mut App, tid: TabId, node: Option<NodeId>) {
 
 fn on_lbutton(app: &mut App, pane: PaneId, x: i32, y: i32) -> bool {
     app.activate_pane(pane);
+    app.grid_ui.swallow_dbl = false;
     let Some(tid) = active_tid(app, pane) else { return false };
     match hit(app, pane, x, y) {
+        Hit::Crumb { target, .. } => {
+            app.grid_ui.swallow_dbl = true;
+            app.navigate(tid, target.as_deref(), target.is_some());
+            false
+        }
+        Hit::Up => {
+            app.grid_ui.swallow_dbl = true;
+            go_up(app, tid);
+            false
+        }
         Hit::Divider(c) => {
             app.grid_ui.col_drag = Some((pane, c, x, app.settings.columns[c]));
             true
@@ -994,12 +1211,15 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
             return (!paths.is_empty()).then(|| Deferred::Drag(paths, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK));
         }
     }
-    let row = match hit(app, pane, x, y) {
-        Hit::Row { row, .. } => Some((pane, row)),
-        _ => None,
+    let (row, bar) = match hit(app, pane, x, y) {
+        Hit::Row { row, .. } => (Some((pane, row)), None),
+        Hit::Crumb { index, .. } => (None, Some((pane, BarHot::Crumb(index)))),
+        Hit::Up => (None, Some((pane, BarHot::Up))),
+        _ => (None, None),
     };
-    if app.grid_ui.hover != row {
+    if app.grid_ui.hover != row || app.grid_ui.bar_hover != bar {
         app.grid_ui.hover = row;
+        app.grid_ui.bar_hover = bar;
         invalidate(hwnd);
     }
     unsafe {
@@ -1015,6 +1235,9 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
 }
 
 fn on_dblclick(app: &mut App, pane: PaneId, x: i32, y: i32) -> Option<Deferred> {
+    if std::mem::take(&mut app.grid_ui.swallow_dbl) {
+        return None;
+    }
     let tid = active_tid(app, pane)?;
     match hit(app, pane, x, y) {
         Hit::Header(c) => app.sort_by(tid, SortKey::from_column(c)),
@@ -1039,12 +1262,10 @@ fn on_dblclick(app: &mut App, pane: PaneId, x: i32, y: i32) -> Option<Deferred> 
                 }
                 Kind::ZipDir => app.toggle(tid, node),
                 Kind::Dir | Kind::Drive | Kind::Zip => {
-                    if !is_root {
-                        app.navigate(tid, Some(&path), true);
-                    } else if is_drive_root(&path) {
-                        app.navigate(tid, None, false);
+                    if is_root {
+                        go_up(app, tid);
                     } else {
-                        app.navigate(tid, Some(&path), false);
+                        app.navigate(tid, Some(&path), true);
                     }
                 }
             }
@@ -1052,6 +1273,16 @@ fn on_dblclick(app: &mut App, pane: PaneId, x: i32, y: i32) -> Option<Deferred> 
         _ => {}
     }
     None
+}
+
+/// Re-roots the tab at its root's parent (drive roots go to This PC), keeping the old root expanded.
+fn go_up(app: &mut App, tid: TabId) {
+    let Some(path) = app.tabs.get(&tid).and_then(|t| t.root.clone()) else { return };
+    if is_drive_root(&path) {
+        app.navigate(tid, None, false);
+    } else {
+        app.navigate(tid, Some(&path), false);
+    }
 }
 
 fn on_rbutton(app: &mut App, pane: PaneId, x: i32, y: i32) {
@@ -1104,7 +1335,8 @@ fn prepare_menu(app: &mut App, pane: PaneId, hwnd: HWND, keyboard: bool, pt: POI
     t.ensure_rows();
     let pt = if keyboard {
         let row = t.focus.and_then(|f| t.row_of(f)).unwrap_or(t.top);
-        let y = m.header + (row.saturating_sub(t.top)) as i32 * m.row + m.row / 2;
+        let geo = Geo::of(&m, t);
+        let y = geo.row_y(row, t.top).unwrap_or(geo.scroll_y) + m.row / 2;
         client_to_screen(hwnd, POINT { x: m.text_x(t.scroll_x, 0), y })
     } else {
         pt
@@ -1415,13 +1647,14 @@ fn place_rename(app: &mut App) {
     let place = app.tabs.get_mut(&tid).filter(|_| shown).and_then(|t| {
         t.ensure_rows();
         let r = t.row_of(node)?;
-        if r < t.top || r >= t.top + view {
+        let geo = Geo::of(&m, t);
+        if r >= geo.pin && (r < t.top || r >= t.top + view) {
             return None;
         }
         let depth = t.tree.get(node)?.depth;
         let x = m.text_x(t.scroll_x, depth) - scale(3, app.dpi);
         let right = -t.scroll_x + m.cols[0];
-        let y = m.header + (r - t.top) as i32 * m.row;
+        let y = geo.row_y(r, t.top)?;
         Some((x, y, (right - x).max(scale(80, app.dpi))))
     });
     unsafe {

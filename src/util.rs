@@ -152,6 +152,23 @@ pub fn file_name(path: &str) -> String {
     }
 }
 
+/// Breadcrumb segments `(label, path)` from the drive/share root down to `path`.
+pub fn crumbs(path: &str) -> Vec<(String, String)> {
+    let mut chain = vec![normalize_path(path)];
+    while let Some(p) = parent_path(chain.last().unwrap()) {
+        chain.push(p);
+    }
+    chain.reverse();
+    chain
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let label = if i == 0 { p.trim_end_matches('\\').to_string() } else { file_name(&p) };
+            (label, p)
+        })
+        .collect()
+}
+
 pub fn join_path(dir: &str, name: &str) -> String {
     if dir.ends_with('\\') {
         format!("{dir}{name}")
@@ -317,6 +334,14 @@ mod tests {
         assert_eq!(format_count(1000), "1,000");
         assert_eq!(format_count(250_000), "250,000");
         assert_eq!(format_count(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn breadcrumbs() {
+        let s = |v: Vec<(String, String)>| v.into_iter().map(|(l, p)| format!("{l}={p}")).collect::<Vec<_>>();
+        assert_eq!(s(crumbs("C:\\")), ["C:=C:\\"]);
+        assert_eq!(s(crumbs("C:\\Users\\bob\\")), ["C:=C:\\", "Users=C:\\Users", "bob=C:\\Users\\bob"]);
+        assert_eq!(s(crumbs("\\\\srv\\share\\x")), ["\\\\srv\\share=\\\\srv\\share", "x=\\\\srv\\share\\x"]);
     }
 
     #[test]

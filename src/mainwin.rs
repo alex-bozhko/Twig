@@ -24,8 +24,21 @@ const STATUS: i32 = 24;
 const STRIP: i32 = 34;
 const SPLIT: i32 = 6;
 const MIN_PANE: i32 = 120;
-/// Room for the funnel glyph before a filtered tab's title.
-const FUNNEL_W: i32 = 18;
+/// Room for each badge glyph (zoom, filter) before a tab's title.
+const BADGE_W: i32 = 18;
+
+/// What a tab header shows: title, zoomed-in badge, filter badge.
+type TabLabel = (String, bool, bool);
+
+fn tab_label(app: &App, tid: &TabId) -> TabLabel {
+    app.tabs.get(tid).map(|t| (t.title(), t.zoomed(), !t.filter.is_empty())).unwrap_or_default()
+}
+
+/// True when `pane`'s tab headers were laid out for different labels (title or badges changed).
+pub fn tabs_stale(app: &App, pane: PaneId) -> bool {
+    let (Some(p), Some(pc)) = (app.panes.get(&pane), app.chrome.panes.iter().find(|c| c.pane == pane)) else { return false };
+    pc.labels.len() != p.tabs.len() || p.tabs.iter().zip(&pc.labels).any(|(t, l)| tab_label(app, t) != *l)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Btn {
@@ -58,6 +71,7 @@ struct PaneChrome {
     tabs: Vec<TabRect>,
     plus: RECT,
     grid: RECT,
+    labels: Vec<TabLabel>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -176,13 +190,9 @@ pub fn relayout(app: &mut App) {
         let Some(p) = app.panes.get(&pid) else { continue };
         let strip = rc(r.x, r.y, r.w, strip_h.min(r.h));
         let grid = rc(r.x, r.y + strip_h, r.w, r.h - strip_h);
-        let titles: Vec<(String, bool)> = p
-            .tabs
-            .iter()
-            .map(|t| app.tabs.get(t).map(|t| (t.title(), !t.filter.is_empty())).unwrap_or_default())
-            .collect();
-        let (tabs, plus) = layout_tabs(hdc, app.fonts.ui, d, &strip, &titles);
-        panes.push(PaneChrome { pane: pid, strip, tabs, plus, grid });
+        let labels: Vec<TabLabel> = p.tabs.iter().map(|t| tab_label(app, t)).collect();
+        let (tabs, plus) = layout_tabs(hdc, app.fonts.ui, d, &strip, &labels);
+        panes.push(PaneChrome { pane: pid, strip, tabs, plus, grid, labels });
         unsafe {
             let g = p.grid();
             let _ = MoveWindow(g, grid.left, grid.top, grid.right - grid.left, grid.bottom - grid.top, true);
@@ -242,7 +252,7 @@ pub fn layout_search(app: &mut App) {
     invalidate(app.hwnd);
 }
 
-fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[(String, bool)]) -> (Vec<TabRect>, RECT) {
+fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[TabLabel]) -> (Vec<TabRect>, RECT) {
     let top = strip.top + scale(4, d);
     let bottom = strip.bottom - 1;
     let h = (bottom - top).max(0);
@@ -254,9 +264,9 @@ fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[(String, b
     let (min_w, max_w) = (scale(90, d), scale(220, d));
     let mut widths: Vec<i32> = titles
         .iter()
-        .map(|(t, filtered)| {
-            let funnel = if *filtered { scale(FUNNEL_W, d) } else { 0 };
-            (pad + funnel + text_width(hdc, font, t) + scale(6, d) + close + scale(6, d)).clamp(min_w, max_w)
+        .map(|(t, zoomed, filtered)| {
+            let badges = scale(BADGE_W, d) * (*zoomed as i32 + *filtered as i32);
+            (pad + badges + text_width(hdc, font, t) + scale(6, d) + close + scale(6, d)).clamp(min_w, max_w)
         })
         .collect();
     let total: i32 = widths.iter().sum();
@@ -471,13 +481,14 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
                 fill(hdc, &tr.rect, pal.tab_hover);
             }
             let mut text_r = RECT { left: tr.rect.left + scale(10, d), right: tr.close.left - scale(2, d), ..tr.rect };
-            if !tab.filter.is_empty() {
-                let funnel = RECT { right: text_r.left + scale(FUNNEL_W, d), ..text_r };
+            let badges = [(tab.zoomed(), glyph::ZOOM), (!tab.filter.is_empty(), glyph::FILTER)];
+            for (_, g) in badges.into_iter().filter(|b| b.0) {
+                let badge = RECT { right: text_r.left + scale(BADGE_W, d), ..text_r };
                 unsafe {
                     SelectObject(hdc, app.fonts.glyph_small);
                 }
-                draw_text(hdc, glyph::FILTER, &funnel, pal.accent, DT_LEFT_V);
-                text_r.left = funnel.right;
+                draw_text(hdc, g, &badge, pal.accent, DT_LEFT_V);
+                text_r.left = badge.right;
             }
             unsafe {
                 SelectObject(hdc, app.fonts.ui);

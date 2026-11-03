@@ -16,6 +16,9 @@ file operations.
   load in the background and update live as files change on disk.
 - Double-click a folder to re-root the tab on it; double-click the root to go
   up (a drive root goes back to **This PC**).
+- When zoomed into a folder, the tab shows a zoom badge, a clickable
+  breadcrumb bar sits above the columns, and the root row stays pinned at the
+  top with an **Up** button.
 - Folder context menu adds **Expand all** / **Collapse all**.
 - Click a column header to sort, drag header edges to resize.
 - Type-to-search jumps to the next matching item in the current folder.

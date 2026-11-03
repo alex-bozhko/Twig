@@ -170,7 +170,9 @@ impl Tab {
             }
         }
         if self.deep && self.scan.as_ref().is_some_and(|s| s.needs_note()) {
-            self.rows.insert(0, NodeId::SCAN_NOTE);
+            // Below a pinned root, so the root stays the first row.
+            let at = usize::from(self.root_node().is_some_and(|r| self.rows.first() == Some(&r)));
+            self.rows.insert(at, NodeId::SCAN_NOTE);
         }
         if self.rows.is_empty() {
             self.focus = None;
@@ -225,6 +227,16 @@ impl Tab {
         } else {
             None
         }
+    }
+
+    /// Rooted at a folder (or archive) rather than at a drive or This PC.
+    pub fn zoomed(&self) -> bool {
+        self.error.is_none() && self.root_node().and_then(|id| self.tree.get(id)).is_some_and(|n| n.kind != Kind::Drive)
+    }
+
+    /// Rows pinned above the scrolling area: the root row while zoomed (call after `ensure_rows`).
+    pub fn pinned(&self) -> usize {
+        usize::from(self.zoomed() && self.rows.first().copied() == self.root_node())
     }
 
     pub fn title(&self) -> String {
@@ -1036,7 +1048,7 @@ impl App {
                         t.restore_top = None;
                         let view = self.view_rows_of(tid);
                         let t = self.tabs.get_mut(&tid).unwrap();
-                        t.top = reveal_top(t.top, row, view, mode);
+                        t.top = reveal_pinned(t.top, row, view, mode, t.pinned());
                     } else if !t.want_expanded.is_empty() {
                         // Still expanding ancestors.
                     } else {
@@ -1072,21 +1084,29 @@ impl App {
         }
     }
 
-    fn view_rows_of(&self, tid: TabId) -> usize {
-        self.pane_of_tab(tid).and_then(|p| self.panes.get(&p)).map(|p| p.view_rows).unwrap_or(20)
+    fn view_rows_of(&mut self, tid: TabId) -> usize {
+        let Some(pane) = self.pane_of_tab(tid) else { return 20 };
+        if self.panes[&pane].active_tab() == Some(tid) {
+            return crate::grid::scroll_view_rows(self, pane);
+        }
+        self.panes.get(&pane).map(|p| p.view_rows).unwrap_or(20)
     }
 
     /// Scrolls `tid` so `row` is visible.
     pub fn scroll_into_view(&mut self, tid: TabId, row: usize) {
         let view = self.view_rows_of(tid);
         if let Some(t) = self.tabs.get_mut(&tid) {
-            t.top = reveal_top(t.top, row, view, Reveal::Visible);
+            t.ensure_rows();
+            t.top = reveal_pinned(t.top, row, view, Reveal::Visible, t.pinned());
         }
     }
 
     /// Repaints the tab if it is shown.
     pub fn after_change(&mut self, tid: TabId) {
         if let Some(pane) = self.pane_of_tab(tid) {
+            if crate::mainwin::tabs_stale(self, pane) {
+                crate::mainwin::relayout(self);
+            }
             if self.panes[&pane].active_tab() == Some(tid) {
                 crate::grid::sync(self, pane);
                 if pane == self.active_pane {
@@ -1741,6 +1761,15 @@ fn reveal_top(top: usize, row: usize, view: usize, mode: Reveal) -> usize {
     }
 }
 
+/// `reveal_top` for a list whose first `pin` rows never scroll; `view` counts the scrolling rows.
+fn reveal_pinned(top: usize, row: usize, view: usize, mode: Reveal, pin: usize) -> usize {
+    if row < pin {
+        top.max(pin)
+    } else {
+        pin + reveal_top(top.saturating_sub(pin), row - pin, view, mode)
+    }
+}
+
 /// The path itself or its nearest existing ancestor.
 pub fn nearest_existing(path: &str) -> Option<String> {
     let mut cur = Some(normalize_path(path));
@@ -1764,5 +1793,16 @@ mod tests {
         assert_eq!(reveal_top(20, 5, 10, Reveal::Visible), 5);
         assert_eq!(reveal_top(0, 15, 10, Reveal::Visible), 6);
         assert_eq!(reveal_top(10, 12, 10, Reveal::Visible), 10);
+    }
+
+    #[test]
+    fn reveal_with_pinned_root() {
+        assert_eq!(reveal_pinned(0, 0, 10, Reveal::Visible, 1), 1);
+        assert_eq!(reveal_pinned(30, 0, 10, Reveal::Center, 1), 30);
+        assert_eq!(reveal_pinned(1, 10, 10, Reveal::Visible, 1), 1);
+        assert_eq!(reveal_pinned(1, 11, 10, Reveal::Visible, 1), 2);
+        assert_eq!(reveal_pinned(20, 5, 10, Reveal::Visible, 1), 5);
+        assert_eq!(reveal_pinned(1, 50, 10, Reveal::Center, 1), 45);
+        assert_eq!(reveal_pinned(0, 50, 10, Reveal::Center, 0), 45);
     }
 }
