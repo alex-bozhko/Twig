@@ -452,11 +452,14 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
                 || c.drag_hover == Some((pc.pane, i));
             if active {
                 fill(hdc, &tr.rect, pal.bg);
-                if pane_active {
-                    fill(hdc, &RECT { bottom: tr.rect.top + scale(2, d), ..tr.rect }, pal.accent);
-                }
+                // Accent bar marks the active pane's tab; other panes get a neutral one.
+                let bar = RECT { bottom: tr.rect.top + scale(3, d), ..tr.rect };
+                fill(hdc, &bar, if pane_active { pal.accent } else { pal.border });
             } else if hovered {
                 fill(hdc, &tr.rect, pal.tab_hover);
+            } else if i + 1 != p.active {
+                let h = tr.rect.bottom - tr.rect.top;
+                fill(hdc, &rc(tr.rect.right - 1, tr.rect.top + h / 4, 1, h / 2), pal.border);
             }
             let mut text_r = RECT { left: tr.rect.left + scale(10, d), right: tr.close.left - scale(2, d), ..tr.rect };
             let badges = [(tab.zoomed(), glyph::ZOOM), (!tab.filter.is_empty(), glyph::FILTER)];
@@ -471,7 +474,7 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
             unsafe {
                 SelectObject(hdc, app.fonts.ui);
             }
-            draw_text(hdc, &tab.title(), &text_r, if active { pal.text } else { pal.text_dim }, DT_LEFT_V);
+            draw_text(hdc, &tab.title(), &text_r, if active { pal.text } else { pal.text_soft }, DT_LEFT_V);
             if active || hovered {
                 if c.hot == Some(Hot::TabClose(pc.pane, i)) {
                     fill(hdc, &tr.close, pal.hover);
