@@ -78,6 +78,10 @@ file operations.
 - `Delete` recycles, `Shift+Delete` deletes permanently; both ask for
   confirmation first.
 - `F2` / `Enter` rename, `Alt+Enter` properties.
+- **New → Folder / Text Document** in the context menu of a folder, a drive or
+  the empty space below the rows (the current folder); `Ctrl+Shift+N` creates
+  a folder inside the focused folder (or next to a focused file). The new item
+  starts in rename mode.
 - `Ctrl+Z` undo of copy / move / rename / recycle / new item.
 - Full Windows Shell context menu (`Shift` for extended verbs).
 - All operations run on a background thread via `IFileOperation`; the UI never

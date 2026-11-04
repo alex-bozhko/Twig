@@ -1871,6 +1871,10 @@ struct MenuPrep {
     dest: Option<String>,
 }
 
+fn new_submenu() -> MenuItem {
+    MenuItem::Sub("New".into(), vec![(C_NEW_FOLDER, "Folder".into()), (C_NEW_FILE, "Text Document".into())])
+}
+
 fn prepare_menu(app: &mut App, pane: PaneId, hwnd: HWND, keyboard: bool, pt: POINT) -> Option<MenuPrep> {
     let tid = active_tid(app, pane)?;
     let m = metrics(app);
@@ -1894,10 +1898,7 @@ fn prepare_menu(app: &mut App, pane: PaneId, hwnd: HWND, keyboard: bool, pt: POI
     if background {
         let dest = app.dest_for(tid, None);
         if dest.is_some() {
-            items.push(MenuItem::Sub(
-                "New".into(),
-                vec![(C_NEW_FOLDER, "Folder".into()), (C_NEW_FILE, "Text Document".into())],
-            ));
+            items.push(new_submenu());
         }
         if dest.is_some() && shell::clipboard_has_files() {
             items.push(MenuItem::Item(C_PASTE, "Paste".into()));
@@ -1922,6 +1923,10 @@ fn prepare_menu(app: &mut App, pane: PaneId, hwnd: HWND, keyboard: bool, pt: POI
         }
         if !virt {
             items.push(MenuItem::Item(C_EXPLORER, "Open in Explorer".into()));
+        }
+        let creatable = n.kind == Kind::Dir || (n.kind == Kind::Drive && !crate::util::is_server_path(&n.path));
+        if creatable {
+            items.push(new_submenu());
         }
     }
     let fav_path = match t.tree.get(nodes[0]) {
