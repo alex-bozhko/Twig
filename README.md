@@ -44,6 +44,13 @@ file operations.
 - Tab context menu: Close, Close Others, Close to the Left / Right,
   Split Right, Split Down, Maximize / Restore pane.
 
+### Command line
+
+- `Twig.exe <path>` opens the folder (or a file's folder with the file
+  selected) in a new tab.
+- Single instance: launching Twig again forwards the path to the running
+  window as a new tab and brings it to the front.
+
 ### File operations
 
 - Drag and drop with Windows semantics (`Ctrl` copy, `Shift` move).

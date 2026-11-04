@@ -23,6 +23,8 @@ pub const WM_REPAINT: u32 = WM_APP + 15;
 /// The breadcrumb path editor's text changed (posted to the grid).
 pub const WM_FILTER_CHANGED: u32 = WM_APP + 16;
 pub const WM_SCAN: u32 = WM_APP + 19;
+/// Paths forwarded from another Twig launch are queued (see `instance`).
+pub const WM_OPEN_PATH: u32 = WM_APP + 20;
 
 static MAIN: AtomicIsize = AtomicIsize::new(0);
 

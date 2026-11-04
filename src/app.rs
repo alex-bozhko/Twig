@@ -26,6 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 pub const TIMER_STATUS: usize = 1;
 pub const TIMER_WATCH: usize = 2;
 pub const TIMER_HOVER_TAB: usize = 3;
+pub const TIMER_OPEN_RETRY: usize = 4;
 const STATUS_MS: u32 = 5000;
 const WATCH_DEBOUNCE_MS: u32 = 200;
 
@@ -481,6 +482,26 @@ impl App {
     }
 
     /// Opens a new tab in the active pane and activates it.
+    /// Sort order for a new tab: the active tab's, else name ascending.
+    pub fn active_sort(&self) -> (SortKey, bool) {
+        self.active_tab().and_then(|t| self.tabs.get(&t)).map_or((SortKey::Name, false), |t| (t.tree.sort, t.tree.desc))
+    }
+
+    /// Opens a path handed over from outside (command line or another Twig launch) in a new tab.
+    pub fn open_external(&mut self, text: &str) {
+        let path = normalize_path(&expand_env(&clean_path_input(text)));
+        if path.is_empty() {
+            return;
+        }
+        if loader::entry_for_path(&path).is_none() {
+            self.set_status_error(format!("Not found: {path}"));
+            return;
+        }
+        let (sort, desc) = self.active_sort();
+        let tid = self.open_tab(None, sort, desc);
+        self.go_to(tid, &path);
+    }
+
     pub fn open_tab(&mut self, root: Option<String>, sort: SortKey, desc: bool) -> TabId {
         let pane = self.active_pane;
         let e = TabEntry { root, sort, desc, ..Default::default() };

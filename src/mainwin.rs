@@ -1,7 +1,7 @@
 //! The main window: per-pane tab strips,
 //! splitters, tab drag & dock, status bar and top-level message handling.
 
-use crate::app::{with_app, App, TIMER_HOVER_TAB, TIMER_STATUS, TIMER_WATCH};
+use crate::app::{with_app, App, TIMER_HOVER_TAB, TIMER_OPEN_RETRY, TIMER_STATUS, TIMER_WATCH};
 use crate::layout::{PaneId, Rect, Side, Splitter};
 use crate::loader::TabId;
 use crate::model::SortKey;
@@ -704,7 +704,24 @@ fn on_focus_changed() {
 
 // ---------- Window procedure ----------
 
-const CLASS: PCWSTR = w!("TwigMainWindow");
+// Debug builds use their own class (and instance mutex) so they never forward to a release Twig.
+#[cfg(debug_assertions)]
+pub const CLASS: PCWSTR = w!("TwigMainWindowDebug");
+#[cfg(not(debug_assertions))]
+pub const CLASS: PCWSTR = w!("TwigMainWindow");
+
+/// Opens paths forwarded by other launches; retries later while the app is busy (modal loop).
+fn open_pending(hwnd: HWND) {
+    crate::instance::bring_to_front(hwnd);
+    let opened = with_app(|app| {
+        for p in crate::instance::take_pending() {
+            app.open_external(&p);
+        }
+    });
+    if opened.is_none() {
+        unsafe { SetTimer(hwnd, TIMER_OPEN_RETRY, 250, None) };
+    }
+}
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
@@ -719,6 +736,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_REPAINT => invalidate(hwnd),
+        WM_COPYDATA => {
+            if crate::instance::receive(hwnd, lp) {
+                return LRESULT(1);
+            }
+        }
+        WM_OPEN_PATH => {
+            open_pending(hwnd);
+            return LRESULT(0);
+        }
         WM_ERASEBKGND => return LRESULT(1),
         WM_SIZE => {
             with_app(relayout);
@@ -785,6 +811,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 TIMER_STATUS => with_app(|app| app.clear_status()),
                 TIMER_WATCH => with_app(|app| app.on_watch_timer()),
                 TIMER_HOVER_TAB => with_app(crate::dragdrop::on_hover_timer),
+                TIMER_OPEN_RETRY => {
+                    let _ = KillTimer(hwnd, TIMER_OPEN_RETRY);
+                    open_pending(hwnd);
+                    None
+                }
                 _ => None,
             };
             return LRESULT(0);
@@ -983,8 +1014,7 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
         0x54 if !sh => {
             // Ctrl+T
             with_app(|app| {
-                let sort = app.active_tab().and_then(|t| app.tabs.get(&t)).map(|t| (t.tree.sort, t.tree.desc));
-                let (sort, desc) = sort.unwrap_or((SortKey::Name, false));
+                let (sort, desc) = app.active_sort();
                 app.open_tab(None, sort, desc);
             });
             true

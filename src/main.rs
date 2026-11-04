@@ -4,6 +4,7 @@ mod app;
 mod dragdrop;
 mod fileops;
 mod grid;
+mod instance;
 mod layout;
 mod loader;
 mod mainwin;
@@ -23,6 +24,10 @@ use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, 
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 fn main() {
+    let start_path = instance::path_from_args(std::env::args().skip(1));
+    if !instance::claim() && instance::forward(start_path.as_deref()) {
+        return;
+    }
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         if OleInitialize(None).is_err() {
@@ -40,6 +45,7 @@ fn main() {
     mainwin::register_class();
     let (hwnd, maximized) = mainwin::create_main_window(&settings);
     win::set_main_hwnd(hwnd);
+    instance::allow_copydata(hwnd);
     theme::set_title_bar_dark(hwnd, dark);
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
     app::install(app::App::new(hwnd, dpi, dark, settings));
@@ -49,6 +55,9 @@ fn main() {
         let _ = ShowWindow(hwnd, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOWNORMAL });
     }
     mainwin::focus_active_grid();
+    if let Some(p) = start_path {
+        app::with_app(|app| app.open_external(&p));
+    }
 
     let mut msg = MSG::default();
     unsafe {
