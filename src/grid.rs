@@ -26,8 +26,6 @@ const CHEVRON_UP: &str = "\u{E70E}";
 const TITLES: [&str; 4] = ["Name", "Date modified", "Type", "Size"];
 const INVALID_CHARS: &str = "\\/:*?\"<>|";
 
-const C_EXPAND_ALL: u32 = ID_CUSTOM_FIRST + 1;
-const C_COLLAPSE_ALL: u32 = ID_CUSTOM_FIRST + 2;
 const C_NEW_FOLDER: u32 = ID_CUSTOM_FIRST + 3;
 const C_NEW_FILE: u32 = ID_CUSTOM_FIRST + 4;
 const C_PASTE: u32 = ID_CUSTOM_FIRST + 5;
@@ -1655,8 +1653,6 @@ fn prepare_menu(app: &mut App, pane: PaneId, hwnd: HWND, keyboard: bool, pt: POI
             if !n.kind.is_virtual() {
                 items.push(MenuItem::Item(C_NEW_TAB, "Open in new tab".into()));
             }
-            items.push(MenuItem::Item(C_EXPAND_ALL, "Expand all".into()));
-            items.push(MenuItem::Item(C_COLLAPSE_ALL, "Collapse all".into()));
         }
         if n.kind == Kind::ZipFile {
             items.push(MenuItem::Item(C_OPEN, "Open".into()));
@@ -1701,8 +1697,6 @@ fn handle_menu(app: &mut App, pane: PaneId, prep: MenuPrep, res: MenuResult) -> 
     match res {
         MenuResult::None => {}
         MenuResult::Custom(id) => match id {
-            C_EXPAND_ALL => app.expand_all(tid, nodes[0]),
-            C_COLLAPSE_ALL => app.collapse_all(tid, nodes[0]),
             C_NEW_FOLDER | C_NEW_FILE => {
                 if let Some(d) = &prep.dest {
                     app.new_item(tid, d, id == C_NEW_FOLDER);

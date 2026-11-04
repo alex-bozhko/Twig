@@ -833,44 +833,6 @@ impl App {
         self.after_change(tid);
     }
 
-    pub fn expand_all(&mut self, tid: TabId, id: NodeId) {
-        let mut stack = vec![id];
-        while let Some(cur) = stack.pop() {
-            let Some(t) = self.tabs.get_mut(&tid) else { return };
-            let Some(n) = t.tree.get_mut(cur) else { continue };
-            if !n.kind.is_container() {
-                continue;
-            }
-            n.expanded = true;
-            n.expand_all = true;
-            match &n.children {
-                Some(ch) => stack.extend(ch.iter().copied()),
-                None => self.load_node(tid, cur),
-            }
-        }
-        if let Some(t) = self.tabs.get_mut(&tid) {
-            t.mark();
-        }
-        self.update_watchers(tid);
-        self.after_change(tid);
-    }
-
-    pub fn collapse_all(&mut self, tid: TabId, id: NodeId) {
-        let Some(t) = self.tabs.get_mut(&tid) else { return };
-        let mut stack = vec![id];
-        while let Some(cur) = stack.pop() {
-            if let Some(n) = t.tree.get_mut(cur) {
-                n.expanded = false;
-                n.expand_all = false;
-                if let Some(ch) = &n.children {
-                    stack.extend(ch.iter().copied());
-                }
-            }
-        }
-        self.collapse(tid, id);
-        self.after_change(tid);
-    }
-
     pub fn refresh_tab(&mut self, tid: TabId) {
         let Some(t) = self.tabs.get_mut(&tid) else { return };
         if t.error.is_some() {
@@ -928,25 +890,12 @@ impl App {
                     match result {
                         Ok(entries) => {
                             let details = loader::detail_items(&entries);
-                            let expand_all = n.expand_all;
                             t.tree.merge_children(node, entries);
                             if let Some(n) = t.tree.get_mut(node).filter(|n| n.expanded) {
                                 n.scanned = false;
                             }
                             if !details.is_empty() {
                                 loader::submit(Job::Details { tab, node, path, items: details });
-                            }
-                            if expand_all {
-                                let kids: Vec<NodeId> = t
-                                    .tree
-                                    .children(node)
-                                    .iter()
-                                    .copied()
-                                    .filter(|&k| t.tree.get(k).is_some_and(|c| c.kind.is_container()))
-                                    .collect();
-                                for k in kids {
-                                    self.expand_all_quiet(tab, k);
-                                }
                             }
                         }
                         Err(e) => {
@@ -982,12 +931,8 @@ impl App {
                     touched.insert(tab);
                     match result {
                         Ok(items) => {
-                            let expand_all = n.expand_all;
                             let (ft, fi) = loader::folder_type();
                             t.tree.set_zip_children(node, items, ft, fi);
-                            if expand_all {
-                                self.expand_all_quiet(tab, node);
-                            }
                         }
                         Err(e) => {
                             n.loading = false;
@@ -1012,23 +957,6 @@ impl App {
             self.process_wants(tab);
             self.update_watchers(tab);
             self.after_change(tab);
-        }
-    }
-
-    fn expand_all_quiet(&mut self, tid: TabId, id: NodeId) {
-        let mut stack = vec![id];
-        while let Some(cur) = stack.pop() {
-            let Some(t) = self.tabs.get_mut(&tid) else { return };
-            let Some(n) = t.tree.get_mut(cur) else { continue };
-            if !n.kind.is_container() {
-                continue;
-            }
-            n.expanded = true;
-            n.expand_all = true;
-            match &n.children {
-                Some(ch) => stack.extend(ch.iter().copied()),
-                None => self.load_node(tid, cur),
-            }
         }
     }
 

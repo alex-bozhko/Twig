@@ -26,6 +26,8 @@ pub struct Palette {
     pub border: COLORREF,
     pub edit_bg: COLORREF,
     pub error: COLORREF,
+    /// Fill of inactive tabs, so they read as tabs against the strip.
+    pub tab_inactive: COLORREF,
     pub tab_hover: COLORREF,
 }
 
@@ -45,7 +47,8 @@ impl Palette {
                 border: rgb(0x3A3A3A),
                 edit_bg: rgb(0x2B2B2B),
                 error: rgb(0xFF99A4),
-                tab_hover: rgb(0x2D2D2D),
+                tab_inactive: rgb(0x2A2A2A),
+                tab_hover: rgb(0x343434),
             }
         } else {
             Palette {
@@ -61,7 +64,8 @@ impl Palette {
                 border: rgb(0xD5D5D5),
                 edit_bg: rgb(0xFFFFFF),
                 error: rgb(0xC42B1C),
-                tab_hover: rgb(0xE8E8E8),
+                tab_inactive: rgb(0xE6E6E6),
+                tab_hover: rgb(0xDADADA),
             }
         }
     }

@@ -146,8 +146,6 @@ pub struct Node {
     pub has_children: Option<bool>,
     pub depth: u16,
     pub selected: bool,
-    /// Expand all descendants as they load.
-    pub expand_all: bool,
     /// The children came from a subfolder-search scan (no exact icons; dropped when it ends).
     pub scanned: bool,
 }
@@ -175,7 +173,6 @@ impl Node {
             has_children: e.has_children,
             depth,
             selected: false,
-            expand_all: false,
             scanned: false,
         }
     }
@@ -509,7 +506,6 @@ impl Tree {
                         has_children: Some(false),
                         depth: base_depth + 1 + i as u16,
                         selected: false,
-                        expand_all: false,
                         scanned: false,
                     };
                     let id = self.alloc(node);
@@ -543,7 +539,6 @@ impl Tree {
                     has_children: Some(false),
                     depth: base_depth + 1 + i as u16,
                     selected: false,
-                    expand_all: false,
                     scanned: false,
                 };
                 let id = self.alloc(node);
@@ -752,7 +747,6 @@ impl Tree {
     pub fn collapse(&mut self, id: NodeId) {
         if let Some(n) = self.get_mut(id) {
             n.expanded = false;
-            n.expand_all = false;
         }
         let mut stack: Vec<NodeId> = self.children(id).to_vec();
         while let Some(c) = stack.pop() {
@@ -812,7 +806,6 @@ impl Tree {
                 n.children = None;
                 n.scanned = false;
                 n.loading = false;
-                n.expand_all = false;
             } else if let Some(ch) = &n.children {
                 stack.extend(ch.iter().copied());
             }

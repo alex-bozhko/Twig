@@ -24,7 +24,6 @@ file operations.
   paste a path. Quotes and `%VARS%` are fine, a file
   path opens its folder with the file selected, `Enter` goes there, and `Esc`
   or clicking away cancels.
-- Folder context menu adds **Expand all** / **Collapse all**.
 - Click a column header to sort, drag header edges to resize.
 - Type-to-search jumps to the next matching item in the current folder.
 - The status bar shows the active tab's item count, and the number and total

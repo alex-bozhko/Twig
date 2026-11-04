@@ -241,9 +241,11 @@ fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[TabLabel])
             (pad + badges + text_width(hdc, font, t) + scale(6, d) + close + scale(6, d)).clamp(min_w, max_w)
         })
         .collect();
-    let total: i32 = widths.iter().sum();
-    if total > avail && !widths.is_empty() {
-        let each = (avail / widths.len() as i32).max(scale(44, d));
+    let gap = scale(2, d);
+    let n = widths.len() as i32;
+    let total: i32 = widths.iter().sum::<i32>() + gap * (n - 1).max(0);
+    if total > avail && n > 0 {
+        let each = ((avail - gap * (n - 1)) / n).max(scale(44, d));
         widths.iter_mut().for_each(|w| *w = (*w).min(each));
     }
     let mut x = left;
@@ -253,7 +255,7 @@ fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[TabLabel])
         let cx = rect.right - scale(6, d) - close;
         let cy = top + (h - close) / 2;
         tabs.push(TabRect { rect, close: rc(cx, cy, close, close) });
-        x += w + 1;
+        x += w + gap;
     }
     let ph = scale(28, d).min(h);
     let plus = rc(x + scale(2, d), top + (h - ph) / 2, plus_w, ph);
@@ -425,7 +427,10 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     let drag_target = c.tab_drag.as_ref().filter(|t| t.active).and_then(|t| t.spot);
     for pc in &c.panes {
         fill(hdc, &pc.strip, pal.toolbar);
+        // Baseline the active tab opens into.
+        fill(hdc, &RECT { top: pc.strip.bottom - 1, ..pc.strip }, pal.border);
         let Some(p) = app.panes.get(&pc.pane) else { continue };
+        let radius = scale(6, d);
         let pane_active = pc.pane == app.active_pane;
         for (i, tr) in pc.tabs.iter().enumerate() {
             let Some(tab) = p.tabs.get(i).and_then(|t| app.tabs.get(t)) else { continue };
@@ -433,15 +438,13 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
             let hovered = matches!(c.hot, Some(Hot::Tab(pp, ii)) | Some(Hot::TabClose(pp, ii)) if pp == pc.pane && ii == i)
                 || c.drag_hover == Some((pc.pane, i));
             if active {
-                fill(hdc, &tr.rect, pal.bg);
-                // Accent bar marks the active pane's tab; other panes get a neutral one.
-                let bar = RECT { bottom: tr.rect.top + scale(3, d), ..tr.rect };
-                fill(hdc, &bar, if pane_active { pal.accent } else { pal.border });
-            } else if hovered {
-                fill(hdc, &tr.rect, pal.tab_hover);
-            } else if i + 1 != p.active {
-                let h = tr.rect.bottom - tr.rect.top;
-                fill(hdc, &rc(tr.rect.right - 1, tr.rect.top + h / 4, 1, h / 2), pal.border);
+                // An accent cap marks the active pane's tab; other panes get a neutral one.
+                let body = RECT { bottom: pc.strip.bottom, ..tr.rect };
+                fill_round_top(hdc, &body, if pane_active { pal.accent } else { pal.border }, radius);
+                fill_round_top(hdc, &RECT { top: body.top + scale(2, d), ..body }, pal.bg, radius);
+            } else {
+                let body = RECT { top: tr.rect.top + scale(2, d), ..tr.rect };
+                fill_round_top(hdc, &body, if hovered { pal.tab_hover } else { pal.tab_inactive }, radius);
             }
             let mut text_r = RECT { left: tr.rect.left + scale(10, d), right: tr.close.left - scale(2, d), ..tr.rect };
             let badges = [(tab.zoomed(), glyph::ZOOM), (!tab.filter.is_empty(), glyph::FILTER)];
