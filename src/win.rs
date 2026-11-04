@@ -178,21 +178,6 @@ pub fn fill(hdc: HDC, r: &RECT, color: COLORREF) {
     }
 }
 
-/// Fills `r` with its top corners rounded by `radius`.
-pub fn fill_round_top(hdc: HDC, r: &RECT, color: COLORREF, radius: i32) {
-    let rad = radius.min((r.bottom - r.top) / 2).max(0);
-    unsafe {
-        SetDCBrushColor(hdc, color);
-        SetDCPenColor(hdc, color);
-        let old_b = SelectObject(hdc, GetStockObject(DC_BRUSH));
-        let old_p = SelectObject(hdc, GetStockObject(DC_PEN));
-        let _ = RoundRect(hdc, r.left, r.top, r.right, r.bottom, rad * 2, rad * 2);
-        SelectObject(hdc, old_b);
-        SelectObject(hdc, old_p);
-    }
-    fill(hdc, &RECT { top: r.top + rad, ..*r }, color);
-}
-
 pub fn frame(hdc: HDC, r: &RECT, color: COLORREF, width: i32) {
     let w = width.max(1);
     fill(hdc, &RECT { left: r.left, top: r.top, right: r.right, bottom: r.top + w }, color);
