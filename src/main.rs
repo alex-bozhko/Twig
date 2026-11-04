@@ -41,9 +41,8 @@ fn main() {
     let (hwnd, maximized) = mainwin::create_main_window(&settings);
     win::set_main_hwnd(hwnd);
     theme::set_title_bar_dark(hwnd, dark);
-    let search = mainwin::create_search_edit(hwnd);
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
-    app::install(app::App::new(hwnd, search, dpi, dark, settings));
+    app::install(app::App::new(hwnd, dpi, dark, settings));
     mainwin::init_chrome();
     dragdrop::register_main(hwnd);
     unsafe {

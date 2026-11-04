@@ -1,4 +1,4 @@
-//! The main window: toolbar (filter box), per-pane tab strips,
+//! The main window: per-pane tab strips,
 //! splitters, tab drag & dock, status bar and top-level message handling.
 
 use crate::app::{with_app, App, TIMER_HOVER_TAB, TIMER_STATUS, TIMER_WATCH};
@@ -6,9 +6,7 @@ use crate::layout::{PaneId, Rect, Side, Splitter};
 use crate::loader::TabId;
 use crate::model::SortKey;
 use crate::theme::glyph;
-use crate::util::*;
 use crate::win::*;
-use std::cell::Cell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -16,10 +14,8 @@ use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveCli
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
-use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-const TOOLBAR: i32 = 44;
 const STATUS: i32 = 24;
 const STRIP: i32 = 34;
 const SPLIT: i32 = 6;
@@ -41,15 +37,7 @@ pub fn tabs_stale(app: &App, pane: PaneId) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Btn {
-    ClearFilter,
-    /// Subfolder-search toggle inside the filter box.
-    Deep,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Hot {
-    Button(Btn),
     Tab(PaneId, usize),
     TabClose(PaneId, usize),
     Plus(PaneId),
@@ -88,23 +76,9 @@ struct TabDrag {
 
 #[derive(Default)]
 pub struct Chrome {
-    /// The filter box has focus.
-    pub search_editing: bool,
-    /// The active tab is filtered (shows the clear button and accent border).
-    pub filter_active: bool,
-    /// The active tab searches subfolders too.
-    pub deep_active: bool,
-    /// Subfolder search can be turned on in the active tab (it has a root folder).
-    pub deep_available: bool,
     /// Tab under an OLE drag (activated after a delay).
     pub drag_hover: Option<(PaneId, usize)>,
-    toolbar: RECT,
     status: RECT,
-    search_rect: RECT,
-    clear_rect: RECT,
-    deep_rect: RECT,
-    /// The subfolder toggle has room for its text label.
-    deep_label: bool,
     panes: Vec<PaneChrome>,
     splitters: Vec<Splitter>,
     hot: Option<Hot>,
@@ -134,19 +108,12 @@ pub fn relayout(app: &mut App) {
     if w <= 0 || h <= 0 {
         return;
     }
-    let tb = scale(TOOLBAR, d);
     let sb = scale(STATUS, d);
-    let pad = scale(6, d);
-    let bh = scale(32, d);
-    let by = (tb - bh) / 2;
 
     let c = &mut app.chrome;
-    c.toolbar = rc(0, 0, w, tb);
     c.status = rc(0, h - sb, w, sb);
-    c.search_rect = rc(pad, by, (w - 2 * pad).max(0), bh);
-    layout_search(app);
 
-    let area = Rect::new(0, tb, w, h - tb - sb);
+    let area = Rect::new(0, 0, w, h - sb);
     let mut rects = Vec::new();
     let mut splitters = Vec::new();
     match app.maximized.filter(|p| app.panes.contains_key(p)) {
@@ -186,42 +153,6 @@ pub fn relayout(app: &mut App) {
         crate::grid::sync(app, pid);
     }
     invalidate(hwnd);
-}
-
-const DEEP_LABEL: &str = "Subfolders";
-
-/// Lays out the filter box: search icon, edit, the subfolder toggle (only while
-/// filtering or while it is on) and the clear button. The toggle shrinks to a bare
-/// checkbox when the box is too narrow for its label.
-pub fn layout_search(app: &mut App) {
-    let d = app.dpi;
-    let label_w = unsafe {
-        let hdc = GetDC(app.hwnd);
-        let w = text_width(hdc, app.fonts.ui, DEEP_LABEL);
-        ReleaseDC(app.hwnd, hdc);
-        w
-    };
-    let c = &mut app.chrome;
-    let sr = c.search_rect;
-    let bh = sr.bottom - sr.top;
-    let icon_w = scale(28, d);
-    c.clear_rect = rc(sr.right - icon_w, sr.top, icon_w, bh);
-    let edit_left = sr.left + icon_w;
-    let mut edit_right = c.clear_rect.left;
-    c.deep_rect = RECT::default();
-    c.deep_label = false;
-    if c.filter_active || c.deep_active {
-        let full = scale(8 + 14 + 6 + 8, d) + label_w;
-        c.deep_label = edit_right - full - edit_left >= scale(80, d);
-        let w = if c.deep_label { full } else { icon_w };
-        c.deep_rect = rc(edit_right - w, sr.top, w, bh);
-        edit_right = c.deep_rect.left - scale(2, d);
-    }
-    let eh = app.fonts.ui_height + 2;
-    unsafe {
-        let _ = MoveWindow(app.search_edit, edit_left, sr.top + (bh - eh) / 2, (edit_right - edit_left).max(0), eh, true);
-    }
-    invalidate(app.hwnd);
 }
 
 fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[TabLabel]) -> (Vec<TabRect>, RECT) {
@@ -268,12 +199,6 @@ pub fn tab_at(app: &App, x: i32, y: i32) -> Option<(PaneId, usize)> {
 }
 
 fn hit(c: &Chrome, x: i32, y: i32) -> Option<Hot> {
-    if c.filter_active && pt_in(&c.clear_rect, x, y) {
-        return Some(Hot::Button(Btn::ClearFilter));
-    }
-    if c.deep_rect.right > c.deep_rect.left && pt_in(&c.deep_rect, x, y) {
-        return Some(Hot::Button(Btn::Deep));
-    }
     if let Some(i) = c.splitters.iter().position(|s| s.rect.contains(x, y)) {
         return Some(Hot::Splitter(i));
     }
@@ -325,84 +250,11 @@ fn drop_spot(app: &App, tab: TabId, x: i32, y: i32) -> Option<DropSpot> {
 
 // ---------- Painting ----------
 
-/// Status-bar hint while hovering the subfolder-search toggle.
-fn deep_hint(c: &Chrome) -> String {
-    if !c.deep_available {
-        "Search subfolders (Alt+S) \u{2014} not available in This PC: open a folder or drive first".to_string()
-    } else if c.deep_active {
-        "Search subfolders is ON (Alt+S to turn off) \u{2014} the filter also matches items inside collapsed folders".to_string()
-    } else {
-        "Search subfolders (Alt+S) \u{2014} filter every item under this tab's folder".to_string()
-    }
-}
-
 fn paint(app: &App, hdc: HDC, client: &RECT) {
     let pal = app.pal;
     let c = &app.chrome;
     let d = app.dpi;
     fill(hdc, client, pal.bg);
-
-    // Toolbar
-    fill(hdc, &c.toolbar, pal.toolbar);
-    if c.search_rect.right > c.search_rect.left {
-        fill(hdc, &c.search_rect, pal.edit_bg);
-        let lit = c.search_editing || c.filter_active;
-        frame(hdc, &c.search_rect, if lit { pal.accent } else { pal.border }, if lit { scale(2, d).max(1) } else { 1 });
-        let icon = RECT { right: c.search_rect.left + (c.clear_rect.right - c.clear_rect.left), ..c.search_rect };
-        unsafe {
-            SelectObject(hdc, app.fonts.glyph_small);
-        }
-        draw_text(hdc, if c.filter_active { glyph::FILTER } else { glyph::SEARCH }, &icon, if c.filter_active { pal.accent } else { pal.text_dim }, DT_CENTER_V);
-        if c.filter_active {
-            let k = scale(4, d);
-            let inner = RECT { left: c.clear_rect.left + k, top: c.clear_rect.top + k, right: c.clear_rect.right - k, bottom: c.clear_rect.bottom - k };
-            if c.hot == Some(Hot::Button(Btn::ClearFilter)) {
-                fill(hdc, &inner, pal.hover);
-            }
-            draw_text(hdc, glyph::CLOSE, &inner, pal.text_dim, DT_CENTER_V);
-        }
-        // Subfolder toggle, a labeled checkbox: accent fill when on, outlined when off,
-        // faint when unavailable. Hidden until the filter is in use.
-        if c.deep_rect.right > c.deep_rect.left {
-            let (kx, ky) = (scale(2, d), scale(5, d));
-            let inner = RECT { left: c.deep_rect.left + kx, top: c.deep_rect.top + ky, right: c.deep_rect.right - kx, bottom: c.deep_rect.bottom - ky };
-            let hot = c.hot == Some(Hot::Button(Btn::Deep));
-            let color = if c.deep_active {
-                fill(hdc, &inner, pal.accent);
-                pal.bg
-            } else {
-                if hot && c.deep_available {
-                    fill(hdc, &inner, pal.hover);
-                }
-                frame(hdc, &inner, pal.border, 1);
-                if !c.deep_available {
-                    pal.border
-                } else if hot {
-                    pal.text
-                } else {
-                    pal.text_dim
-                }
-            };
-            let check = if c.deep_active { glyph::CHECKBOX_CHECKED } else { glyph::CHECKBOX };
-            unsafe {
-                SelectObject(hdc, app.fonts.glyph_small);
-            }
-            if c.deep_label {
-                let pad = scale(8, d);
-                let box_r = RECT { left: inner.left + pad - kx, right: inner.left + pad - kx + scale(14, d), ..inner };
-                draw_text(hdc, check, &box_r, color, DT_CENTER_V);
-                let text_r = RECT { left: box_r.right + scale(6, d), ..inner };
-                unsafe {
-                    SelectObject(hdc, app.fonts.ui);
-                }
-                draw_text(hdc, DEEP_LABEL, &text_r, color, DT_LEFT_V);
-            } else {
-                draw_text(hdc, check, &inner, color, DT_CENTER_V);
-            }
-        }
-    }
-    let line = rc(0, c.toolbar.bottom - 1, client.right, 1);
-    fill(hdc, &line, pal.border);
 
     // Splitters
     for (i, s) in c.splitters.iter().enumerate() {
@@ -495,8 +347,8 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         SelectObject(hdc, app.fonts.ui);
     }
     let filter_status;
-    let deep_hint = (c.hot == Some(Hot::Button(Btn::Deep)) && app.status.is_empty()).then(|| deep_hint(c));
-    let (status, color) = match deep_hint.or_else(|| app.filter_status().filter(|_| app.status.is_empty())) {
+    let hint = app.status.is_empty().then(|| crate::grid::bar_hint(app).or_else(|| app.filter_status())).flatten();
+    let (status, color) = match hint {
         Some(s) => {
             filter_status = s;
             (&filter_status, pal.accent)
@@ -616,14 +468,13 @@ fn dock_rect(app: &App, spot: DropSpot) -> Option<RECT> {
 /// Work that must run outside the `with_app` borrow (modal menus/dialogs pump messages).
 enum Deferred {
     TabMenu(TabId, POINT),
-    Focus(HWND),
 }
 
 fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
-    let focus_edit = with_app(|app| {
+    with_app(|app| {
         let h = hit(&app.chrome, x, y);
         match h {
-            Some(Hot::Button(_)) | Some(Hot::TabClose(..)) | Some(Hot::Plus(_)) => {
+            Some(Hot::TabClose(..)) | Some(Hot::Plus(_)) => {
                 app.chrome.pressed = h;
                 unsafe {
                     SetCapture(hwnd);
@@ -657,19 +508,9 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
                     app.activate_pane(p);
                 }
             }
-            None => {
-                let c = &app.chrome;
-                return pt_in(&c.search_rect, x, y).then_some(app.search_edit);
-            }
+            None => {}
         }
-        None
-    })
-    .flatten();
-    if let Some(edit) = focus_edit {
-        unsafe {
-            let _ = SetFocus(edit);
-        }
-    }
+    });
 }
 
 fn on_mouse_move(hwnd: HWND, x: i32, y: i32) {
@@ -719,7 +560,7 @@ fn on_mouse_move(hwnd: HWND, x: i32, y: i32) {
 }
 
 fn on_button_up(hwnd: HWND, x: i32, y: i32) {
-    let deferred = with_app(|app| {
+    with_app(|app| {
         let pressed = app.chrome.pressed.take();
         let tab_drag = app.chrome.tab_drag.take();
         let split = app.chrome.split_drag.take();
@@ -729,7 +570,7 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
         show_overlay(app, None);
         invalidate(hwnd);
         if split.is_some() {
-            return None;
+            return;
         }
         if let Some(td) = tab_drag {
             match td.spot.filter(|_| td.active) {
@@ -738,20 +579,10 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
                 Some(DropSpot::Dock(p, Some(side))) => app.split_with_tab(td.tab, p, side),
                 None => {}
             }
-            return None;
+            return;
         }
-        let pressed = pressed.filter(|p| hit(&app.chrome, x, y) == Some(*p))?;
+        let Some(pressed) = pressed.filter(|p| hit(&app.chrome, x, y) == Some(*p)) else { return };
         match pressed {
-            Hot::Button(b) => {
-                let tid = app.active_tab()?;
-                match b {
-                    Btn::ClearFilter => {
-                        app.clear_filter(tid);
-                        return app.panes.get(&app.active_pane).map(|p| Deferred::Focus(p.grid()));
-                    }
-                    Btn::Deep => app.toggle_deep(tid),
-                }
-            }
             Hot::TabClose(p, i) => {
                 if let Some(t) = app.panes.get(&p).and_then(|pp| pp.tabs.get(i).copied()) {
                     app.close_tab(t);
@@ -763,15 +594,7 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
             }
             _ => {}
         }
-        None
-    })
-    .flatten();
-    match deferred {
-        Some(Deferred::Focus(h)) => unsafe {
-            let _ = SetFocus(h);
-        },
-        Some(Deferred::TabMenu(..)) | None => {}
-    }
+    });
 }
 
 fn on_middle_up(x: i32, y: i32) {
@@ -868,88 +691,9 @@ fn tab_menu(hwnd: HWND, tab: TabId, pt: POINT) {
     });
 }
 
-thread_local! {
-    /// Path box colors, cached for WM_CTLCOLOREDIT arriving while the app is borrowed.
-    static EDIT_COLORS: Cell<(COLORREF, COLORREF)> = const { Cell::new((COLORREF(0), COLORREF(0xFFFFFF))) };
-}
-
-fn apply_edit_font(app: &App) {
-    unsafe {
-        let e = app.search_edit;
-        SendMessageW(e, WM_SETFONT, WPARAM(app.fonts.ui.0 as usize), LPARAM(1));
-        SendMessageW(e, EM_SETMARGINS, WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize), LPARAM(0));
-    }
-}
-
-// ---------- Filter box ----------
-
-unsafe extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
-    match msg {
-        WM_KEYDOWN if wp.0 == VK_ESCAPE.0 as usize => {
-            post_main(WM_FILTER_ESCAPE);
-            return LRESULT(0);
-        }
-        WM_KEYDOWN if wp.0 == VK_RETURN.0 as usize || wp.0 == VK_DOWN.0 as usize => {
-            post_main(WM_FILTER_ENTER);
-            return LRESULT(0);
-        }
-        WM_CHAR if wp.0 == 0x0D || wp.0 == 0x1B => return LRESULT(0),
-        WM_CHAR if wp.0 == 0x01 => {
-            SendMessageW(hwnd, EM_SETSEL, WPARAM(0), LPARAM(-1));
-            return LRESULT(0);
-        }
-        WM_SETFOCUS | WM_KILLFOCUS => post_main(WM_FOCUS_CHANGED),
-        WM_NCDESTROY => {
-            let _ = RemoveWindowSubclass(hwnd, Some(search_proc), 2);
-        }
-        _ => {}
-    }
-    DefSubclassProc(hwnd, msg, wp, lp)
-}
-
-/// The filter box, readable while the app state is borrowed.
-static SEARCH_EDIT: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-
-pub fn create_search_edit(parent: HWND) -> HWND {
-    unsafe {
-        let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
-        let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("EDIT"), PCWSTR::null(), style, 0, 0, 0, 0, parent, None, instance(), None)
-            .unwrap_or_default();
-        let _ = SetWindowSubclass(h, Some(search_proc), 2, 0);
-        SEARCH_EDIT.store(h.0 as isize, std::sync::atomic::Ordering::Relaxed);
-        let cue = wide("Filter this tab (Ctrl+F)");
-        SendMessageW(h, EM_SETCUEBANNER, WPARAM(1), LPARAM(cue.as_ptr() as isize));
-        h
-    }
-}
-
-/// The filter box text changed (typed, pasted, or synced from a tab).
-fn on_filter_changed() {
-    crate::app::FILTER_EDIT_PENDING.store(false, std::sync::atomic::Ordering::Relaxed);
-    with_app(|app| {
-        let Some(tid) = app.active_tab() else { return };
-        let text = get_text(app.search_edit);
-        app.set_filter(tid, &text);
-    });
-}
-
-fn on_filter_escape() {
-    with_app(|app| {
-        if let Some(tid) = app.active_tab() {
-            app.clear_filter(tid);
-        }
-    });
-    focus_active_grid();
-}
-
 fn on_focus_changed() {
     with_app(|app| unsafe {
         let f = GetFocus();
-        let searching = f == app.search_edit;
-        if app.chrome.search_editing != searching {
-            app.chrome.search_editing = searching;
-            invalidate(app.hwnd);
-        }
         if let Some(p) = app.panes.values().find(|p| p.grid() == f).map(|p| p.id) {
             app.activate_pane(p);
         }
@@ -988,10 +732,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_DPICHANGED => {
             let dpi = ((wp.0 >> 16) & 0xFFFF) as u32;
-            with_app(|app| {
-                app.set_dpi(dpi);
-                apply_edit_font(app);
-            });
+            with_app(|app| app.set_dpi(dpi));
             let r = &*(lp.0 as *const RECT);
             let _ = SetWindowPos(hwnd, HWND::default(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             with_app(|app| {
@@ -1007,10 +748,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 with_app(|app| {
                     if app.dark != dark {
                         app.set_dark(dark);
-                        EDIT_COLORS.set((app.pal.text, app.pal.edit_bg));
-                        crate::theme::set_control_theme(app.search_edit, dark, "DarkMode_CFD");
                         app.invalidate_grids();
-                        invalidate(app.search_edit);
                         invalidate(hwnd);
                     }
                 });
@@ -1041,27 +779,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_FOCUS_CHANGED => {
             on_focus_changed();
-            return LRESULT(0);
-        }
-        WM_COMMAND => {
-            if (wp.0 >> 16) as u32 == EN_CHANGE && lp.0 == SEARCH_EDIT.load(std::sync::atomic::Ordering::Relaxed) {
-                // Sent synchronously (possibly while the state is borrowed): handle it later.
-                // on_filter_changed is a no-op unless the filter box text differs from the tab.
-                crate::app::FILTER_EDIT_PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
-                post(hwnd, WM_FILTER_CHANGED, 0, 0);
-                return LRESULT(0);
-            }
-        }
-        WM_FILTER_CHANGED => {
-            on_filter_changed();
-            return LRESULT(0);
-        }
-        WM_FILTER_ESCAPE => {
-            on_filter_escape();
-            return LRESULT(0);
-        }
-        WM_FILTER_ENTER => {
-            focus_active_grid();
             return LRESULT(0);
         }
         WM_TIMER => {
@@ -1119,15 +836,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(1);
                 }
             }
-        }
-        WM_CTLCOLOREDIT => {
-            let (fg, bg) = with_app(|app| (app.pal.text, app.pal.edit_bg)).unwrap_or_else(|| EDIT_COLORS.get());
-            EDIT_COLORS.set((fg, bg));
-            let hdc = HDC(wp.0 as _);
-            SetTextColor(hdc, fg);
-            SetBkColor(hdc, bg);
-            SetDCBrushColor(hdc, bg);
-            return LRESULT(GetStockObject(DC_BRUSH).0 as isize);
         }
         WM_ACTIVATE => {
             // The active pane's selection color depends on whether the window is in the foreground.
@@ -1226,13 +934,9 @@ pub fn create_main_window(settings: &crate::settings::Settings) -> (HWND, bool) 
     }
 }
 
-/// Sets up the filter box font/theme after the app state is installed.
+/// Lays out the window chrome after the app state is installed.
 pub fn init_chrome() {
     with_app(|app| {
-        apply_edit_font(app);
-        EDIT_COLORS.set((app.pal.text, app.pal.edit_bg));
-        crate::theme::set_control_theme(app.search_edit, app.dark, "DarkMode_CFD");
-        app.sync_search_edit();
         relayout(app);
         unsafe {
             let _ = AddClipboardFormatListener(app.hwnd);
@@ -1260,7 +964,7 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
         }
         with_app(|app| {
             if let Some(t) = app.active_tab() {
-                app.toggle_deep(t);
+                crate::grid::toggle_deep(app, t);
             }
         });
         return true;
@@ -1309,21 +1013,18 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
             true
         }
         0x46 if !sh => {
-            // Ctrl+F: filter the active tab.
-            let edit = with_app(|app| app.search_edit);
-            if let Some(e) = edit {
-                unsafe {
-                    let _ = SetFocus(e);
-                    SendMessageW(e, EM_SETSEL, WPARAM(0), LPARAM(-1));
-                }
-            }
+            // Ctrl+F: filter the active tab (":" in its breadcrumb bar).
+            with_app(|app| {
+                let p = app.active_pane;
+                crate::grid::begin_path_edit(app, p, true);
+            });
             true
         }
         0x4C if !sh => {
             // Ctrl+L: type a path into the active tab's breadcrumb bar.
             with_app(|app| {
                 let p = app.active_pane;
-                crate::grid::begin_path_edit(app, p);
+                crate::grid::begin_path_edit(app, p, false);
             });
             true
         }

@@ -23,7 +23,8 @@ file operations.
 - Click the empty part of the breadcrumb bar (or press `Ctrl+L`) to type or
   paste a path. Quotes and `%VARS%` are fine, a file
   path opens its folder with the file selected, `Enter` goes there, and `Esc`
-  or clicking away cancels.
+  or clicking away cancels. Starting the text with `:` filters the tab instead
+  (see Filter below).
 - Click a column header to sort, drag header edges to resize.
 - Type-to-search jumps to the next matching item in the current folder.
 - The status bar shows the active tab's item count, and the number and total
@@ -71,20 +72,23 @@ file operations.
 
 ### Filter (experimental)
 
-- The filter box in the toolbar (`Ctrl+F`) narrows the focused tab to rows
-  whose names contain the text (case-insensitive). Only rows already shown are
-  searched; collapsed folders are not opened.
+- The filter lives in each tab's breadcrumb bar: press `Ctrl+F` (or type `:`
+  in the path editor) and type, e.g. `:report`, to narrow the tab to rows whose
+  names contain the text (case-insensitive), as you type. Only rows already
+  shown are searched; collapsed folders are not opened. `::report` also
+  searches subfolders (see below).
 - Matches are highlighted. Folders kept only because they contain a match are
   dimmed, and an "N items hidden by the filter" row marks each folder that lost
   items.
-- Each tab keeps its own filter; switching tabs puts that tab's text back in
-  the box. A filtered tab shows a funnel in its title, and the status bar shows
-  the match/hidden counts.
-- `Esc` (in the box or the grid) or the × button clears it; `Enter`/`Down`
-  moves to the list. Navigating the tab to another folder also clears it.
+- Each tab keeps its own filter. While it's set, the breadcrumb bar shows it as
+  a chip (click to edit it, × to clear it), the tab shows a funnel in its
+  title, and the status bar shows the match/hidden counts.
+- `Enter` or clicking away keeps the filter and closes the editor; `Esc` (in
+  the editor or the grid) clears it, as does deleting the `:`. Navigating the
+  tab to another folder also clears it.
 - `Ctrl+A` and Shift-range selection skip the dimmed folders.
-- **Search subfolders** (the **Subfolders** checkbox that appears in the filter
-  box once you type, or `Alt+S`)
+- **Search subfolders** (`::text`, the **Subfolders** checkbox that appears in
+  the breadcrumb bar while filtering, or `Alt+S`)
   also searches inside collapsed folders. It is off by default, highlighted when
   on, and unavailable in This PC. Subfolders are read in the background (a
   "Searching subfolders…" row shows progress) with no item limit; turn it off

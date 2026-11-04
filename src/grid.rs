@@ -61,6 +61,8 @@ struct PathEdit {
     edit: isize,
     pane: PaneId,
     tab: TabId,
+    /// The text starts with ":" — it filters the tab instead of naming a path.
+    filter_mode: bool,
 }
 
 /// Grid interaction state shared by all grids (only one interaction happens at a time).
@@ -164,6 +166,12 @@ pub enum Hit {
     Crumb { index: usize, target: Option<String> },
     /// Breadcrumb bar outside the clickable segments (click to type a path).
     CrumbBar,
+    /// The filter chip in the breadcrumb bar (click to edit the filter).
+    BarFilter,
+    /// The chip's × (clears the filter).
+    BarClear,
+    /// The "Subfolders" checkbox in the breadcrumb bar.
+    BarDeep,
     Empty,
     Nothing,
 }
@@ -171,7 +179,12 @@ pub enum Hit {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarHot {
     Crumb(usize),
+    Filter,
+    Clear,
+    Deep,
 }
+
+const DEEP_LABEL: &str = "Subfolders";
 
 /// Vertical layout: column header, pinned root row, scrolling rows, breadcrumb bar at the bottom.
 pub struct Geo {
@@ -300,16 +313,89 @@ fn crumb_layout(app: &App, hdc: HDC, path: &str, w: i32) -> Vec<Crumb> {
     out
 }
 
-fn tab_crumbs(app: &App, pane: PaneId, hdc: HDC, w: i32) -> Vec<Crumb> {
-    let Some(t) = active_tid(app, pane).and_then(|t| app.tabs.get(&t)) else { return Vec::new() };
-    match &t.root {
-        Some(r) => crumb_layout(app, hdc, r, w),
-        // This PC: just the (current, so unclickable) PC icon.
-        None => {
-            let m = metrics(app);
-            vec![Crumb { x: crumb_x0(app), w: m.chev + 2 * m.pad, label: glyph::THIS_PC.to_string(), target: None }]
-        }
+/// The filter chip and "Subfolders" checkbox at the right end of a breadcrumb bar.
+#[derive(Default)]
+struct BarExtras {
+    /// Chip showing the tab's filter while the editor is closed; `clear` is its × button.
+    chip: Option<RECT>,
+    clear: RECT,
+    chip_text: String,
+    /// Subfolder checkbox, shown while filtering; `label` = room for its caption.
+    deep: Option<RECT>,
+    label: bool,
+    deep_on: bool,
+    deep_ok: bool,
+    /// Where the crumbs (or the path editor) must end.
+    right: i32,
+}
+
+/// Lays out `pane`'s breadcrumb bar for a `w`×`h` grid: crumbs on the left (none while the path
+/// editor is open), the filter chip and subfolder checkbox on the right.
+fn bar_layout(app: &App, pane: PaneId, hdc: HDC, w: i32, h: i32) -> (Vec<Crumb>, BarExtras) {
+    let m = metrics(app);
+    let d = app.dpi;
+    let b = crumb_box(app, w, h);
+    let mut ex = BarExtras { right: b.right, ..Default::default() };
+    let Some(tid) = active_tid(app, pane) else { return (Vec::new(), ex) };
+    let Some(t) = app.tabs.get(&tid) else { return (Vec::new(), ex) };
+    let filter_edit = app.grid_ui.path_edit.as_ref().is_some_and(|pe| pe.tab == tid && pe.filter_mode);
+    let editing = t.editing_path;
+    let icon_w = m.header;
+    let gap = scale(4, d);
+    let mut right = b.right - scale(2, d);
+    if filter_edit || (!editing && (!t.filter.is_empty() || t.deep)) {
+        let full = scale(8 + 14 + 6 + 8, d) + text_width(hdc, app.fonts.ui, DEEP_LABEL);
+        ex.label = right - full - b.left >= scale(200, d);
+        let dw = if ex.label { full } else { icon_w };
+        ex.deep = Some(RECT { left: right - dw, right, ..b });
+        ex.deep_on = t.deep;
+        ex.deep_ok = t.deep || (t.root.is_some() && t.error.is_none());
+        right -= dw + gap;
     }
+    if !editing && !t.filter.is_empty() {
+        ex.chip_text = filter_text(t.deep, &t.filter);
+        let natural = scale(6, d) + m.chev + scale(4, d) + text_width(hdc, app.fonts.ui, &ex.chip_text) + icon_w;
+        let cw = natural.min((right - b.left) / 2).max(2 * icon_w);
+        let chip = RECT { left: right - cw, right, ..b };
+        ex.clear = RECT { left: right - icon_w, ..chip };
+        ex.chip = Some(chip);
+        right = chip.left - gap;
+    }
+    ex.right = right;
+    let crumbs = match (&t.root, editing) {
+        (_, true) => Vec::new(),
+        // Fit within [x0, right].
+        (Some(r), false) => crumb_layout(app, hdc, r, right + crumb_x0(app)),
+        // This PC: just the (current, so unclickable) PC icon.
+        (None, false) => vec![Crumb { x: crumb_x0(app), w: m.chev + 2 * m.pad, label: glyph::THIS_PC.to_string(), target: None }],
+    };
+    (crumbs, ex)
+}
+
+/// Like `bar_layout`, measuring with the grid's own DC.
+fn bar_layout_of(app: &App, pane: PaneId) -> (Vec<Crumb>, BarExtras) {
+    let Some(hwnd) = app.panes.get(&pane).map(|p| p.grid()) else { return (Vec::new(), BarExtras::default()) };
+    let r = client_rect(hwnd);
+    unsafe {
+        let hdc = GetDC(hwnd);
+        let out = bar_layout(app, pane, hdc, r.right, r.bottom);
+        ReleaseDC(hwnd, hdc);
+        out
+    }
+}
+
+/// Editor text for a filter: ":text", or "::text" when it also searches subfolders.
+fn filter_text(deep: bool, filter: &str) -> String {
+    format!("{}{filter}", if deep { "::" } else { ":" })
+}
+
+/// Parses editor text as a filter: ":text" → (false, text), "::text" → (true, text); None for a path.
+fn parse_filter(text: &str) -> Option<(bool, &str)> {
+    let q = text.strip_prefix(':')?;
+    Some(match q.strip_prefix(':') {
+        Some(q) => (true, q),
+        None => (false, q),
+    })
 }
 
 enum Deferred {
@@ -464,7 +550,11 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             }
         }
         WM_LBUTTONDOWN => {
-            let _ = SetFocus(hwnd);
+            // Toggling "Subfolders" while typing a filter keeps the editor focused.
+            let keep = with_app(|app| app.grid_ui.path_edit.is_some() && matches!(hit(app, pane, x, y), Hit::BarDeep));
+            if keep != Some(true) {
+                let _ = SetFocus(hwnd);
+            }
             if with_app(|app| on_lbutton(app, pane, x, y)) == Some(true) {
                 SetCapture(hwnd);
             }
@@ -493,6 +583,7 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     app.grid_ui.hover = None;
                     app.grid_ui.bar_hover = None;
                     invalidate(hwnd);
+                    invalidate(app.hwnd);
                 }
             });
         }
@@ -573,12 +664,21 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             return LRESULT(0);
         }
         WM_PATH_END => {
-            let (go, edit) = (wp.0 == 1, lp.0);
+            let (go, edit) = (wp.0, lp.0);
             with_app(|app| {
                 if app.grid_ui.path_edit.as_ref().is_some_and(|pe| pe.edit == edit) {
                     finish_path_edit(app, go);
                 }
             });
+            return LRESULT(0);
+        }
+        // The path editor's text changed; handled later since it may come while the app is borrowed.
+        WM_COMMAND if ((wp.0 >> 16) & 0xFFFF) as u32 == EN_CHANGE => {
+            post(hwnd, WM_FILTER_CHANGED, 0, lp.0);
+            return LRESULT(0);
+        }
+        WM_FILTER_CHANGED => {
+            with_app(|app| on_path_text_changed(app, lp.0));
             return LRESULT(0);
         }
         WM_DESTROY => {
@@ -742,16 +842,22 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
     let hwnd = app.panes[&pane].grid();
     let cr = client_rect(hwnd);
     if y >= geo.crumb_top(cr.bottom) {
-        if t.editing_path {
+        let editing = t.editing_path;
+        let (crumbs, ex) = unsafe {
+            let hdc = GetDC(hwnd);
+            let out = bar_layout(app, pane, hdc, cr.right, cr.bottom);
+            ReleaseDC(hwnd, hdc);
+            out
+        };
+        if ex.deep.is_some_and(|r| pt_in(&r, x, y)) {
+            return Hit::BarDeep;
+        }
+        if editing {
             return Hit::Nothing;
         }
-        let w = cr.right;
-        let crumbs = unsafe {
-            let hdc = GetDC(hwnd);
-            let c = tab_crumbs(app, pane, hdc, w);
-            ReleaseDC(hwnd, hdc);
-            c
-        };
+        if ex.chip.is_some_and(|r| pt_in(&r, x, y)) {
+            return if pt_in(&ex.clear, x, y) { Hit::BarClear } else { Hit::BarFilter };
+        }
         return crumbs
             .into_iter()
             .enumerate()
@@ -845,7 +951,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let view = app.panes[&pane].view_rows;
     let cut = app.cut.as_ref().map(|(_, set)| set);
     let bar_hover = app.grid_ui.bar_hover.filter(|h| h.0 == pane).map(|h| h.1);
-    let crumbs = if app.tabs.get(&tid).is_some_and(|t| !t.editing_path) { tab_crumbs(app, pane, hdc, r.right) } else { Vec::new() };
+    let (crumbs, extras) = bar_layout(app, pane, hdc, r.right, r.bottom);
     let (sep, glyph_mid, dpi) = (crumb_sep(app), app.fonts.glyph_mid, app.dpi);
     let Some(t) = app.tabs.get_mut(&tid) else { return };
     t.ensure_rows();
@@ -856,7 +962,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     unsafe {
         SelectObject(hdc, font);
     }
-    let bar = CrumbBar { crumbs: &crumbs, y: geo.crumb_top(r.bottom), w, h: geo.crumb, sep, font, glyph_mid, hover: bar_hover, dpi };
+    let bar = CrumbBar { crumbs: &crumbs, ex: &extras, y: geo.crumb_top(r.bottom), w, h: geo.crumb, sep, font, glyph_mid, glyph_small, hover: bar_hover, dpi };
     // Header.
     let hy = geo.header_y;
     fill(hdc, &rc(0, hy, w, m.header), pal.toolbar);
@@ -1002,12 +1108,14 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
 /// The breadcrumb bar's layout and state for one paint.
 struct CrumbBar<'a> {
     crumbs: &'a [Crumb],
+    ex: &'a BarExtras,
     y: i32,
     w: i32,
     h: i32,
     sep: i32,
     font: HFONT,
     glyph_mid: HFONT,
+    glyph_small: HFONT,
     hover: Option<BarHot>,
     dpi: u32,
 }
@@ -1033,8 +1141,70 @@ fn draw_crumb_bar(hdc: HDC, b: &CrumbBar, pal: &crate::theme::Palette) {
         }
         draw_text(hdc, &c.label, &rc(c.x, y, c.w, h), if i == last { pal.text } else { pal.text_soft }, DT_CENTER_V);
     }
+    draw_bar_extras(hdc, b, pal);
     unsafe {
         SelectObject(hdc, b.font);
+    }
+}
+
+/// Draws the filter chip (accent-tinted, with ×) and the "Subfolders" checkbox: accent fill when
+/// on, outlined when off, faint when unavailable.
+fn draw_bar_extras(hdc: HDC, b: &CrumbBar, pal: &crate::theme::Palette) {
+    let (ex, d) = (b.ex, b.dpi);
+    let inset = |r: &RECT, ky: i32| RECT { top: r.top + ky, bottom: r.bottom - ky, ..*r };
+    if let Some(chip) = ex.chip {
+        let chip = inset(&chip, scale(1, d));
+        let hot = b.hover == Some(BarHot::Filter);
+        wash(hdc, &chip, pal.accent, if hot { 70 } else { 40 });
+        let gx = chip.left + scale(6, d);
+        let gw = scale(16, d);
+        unsafe {
+            SelectObject(hdc, b.glyph_small);
+        }
+        draw_text(hdc, glyph::FILTER, &RECT { left: gx, right: gx + gw, ..chip }, pal.accent, DT_CENTER_V);
+        let clear = inset(&ex.clear, scale(3, d));
+        if b.hover == Some(BarHot::Clear) {
+            fill(hdc, &clear, pal.hover);
+        }
+        draw_text(hdc, glyph::CLOSE, &clear, if b.hover == Some(BarHot::Clear) { pal.text } else { pal.text_dim }, DT_CENTER_V);
+        unsafe {
+            SelectObject(hdc, b.font);
+        }
+        draw_text(hdc, &ex.chip_text, &RECT { left: gx + gw + scale(4, d), right: ex.clear.left, ..chip }, pal.text, DT_LEFT_V);
+    }
+    if let Some(deep) = ex.deep {
+        let inner = inset(&deep, scale(2, d));
+        let hot = b.hover == Some(BarHot::Deep);
+        let color = if ex.deep_on {
+            fill(hdc, &inner, pal.accent);
+            pal.bg
+        } else {
+            if hot && ex.deep_ok {
+                fill(hdc, &inner, pal.hover);
+            }
+            frame(hdc, &inner, pal.border, 1);
+            if !ex.deep_ok {
+                pal.border
+            } else if hot {
+                pal.text
+            } else {
+                pal.text_dim
+            }
+        };
+        let check = if ex.deep_on { glyph::CHECKBOX_CHECKED } else { glyph::CHECKBOX };
+        unsafe {
+            SelectObject(hdc, b.glyph_small);
+        }
+        if ex.label {
+            let box_r = RECT { left: inner.left + scale(6, d), right: inner.left + scale(6 + 14, d), ..inner };
+            draw_text(hdc, check, &box_r, color, DT_CENTER_V);
+            unsafe {
+                SelectObject(hdc, b.font);
+            }
+            draw_text(hdc, DEEP_LABEL, &RECT { left: box_r.right + scale(6, d), ..inner }, color, DT_LEFT_V);
+        } else {
+            draw_text(hdc, check, &inner, color, DT_CENTER_V);
+        }
     }
 }
 
@@ -1217,7 +1387,22 @@ fn on_lbutton(app: &mut App, pane: PaneId, x: i32, y: i32) -> bool {
         }
         Hit::CrumbBar => {
             app.grid_ui.swallow_dbl = true;
-            begin_path_edit(app, pane);
+            begin_path_edit(app, pane, false);
+            false
+        }
+        Hit::BarFilter => {
+            app.grid_ui.swallow_dbl = true;
+            begin_path_edit(app, pane, true);
+            false
+        }
+        Hit::BarClear => {
+            app.grid_ui.swallow_dbl = true;
+            app.clear_filter(tid);
+            false
+        }
+        Hit::BarDeep => {
+            app.grid_ui.swallow_dbl = true;
+            toggle_deep(app, tid);
             false
         }
         Hit::Divider(c) => {
@@ -1332,9 +1517,16 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
     let (row, bar, cell) = match hit(app, pane, x, y) {
         Hit::Row { row, node, .. } => (Some((pane, row)), None, Some((row, node))),
         Hit::Crumb { index, .. } => (None, Some((pane, BarHot::Crumb(index))), None),
+        Hit::BarFilter => (None, Some((pane, BarHot::Filter)), None),
+        Hit::BarClear => (None, Some((pane, BarHot::Clear)), None),
+        Hit::BarDeep => (None, Some((pane, BarHot::Deep)), None),
         _ => (None, None, None),
     };
     if app.grid_ui.hover != row || app.grid_ui.bar_hover != bar {
+        if app.grid_ui.bar_hover != bar {
+            // The status bar shows a hint for the hovered bar control.
+            invalidate(app.hwnd);
+        }
         app.grid_ui.hover = row;
         app.grid_ui.bar_hover = bar;
         invalidate(hwnd);
@@ -1878,23 +2070,43 @@ fn type_search_char(app: &mut App, pane: PaneId, ch: char) {
 
 // ---------- Typing a path into the breadcrumb bar ----------
 
-/// Opens an editor over `pane`'s breadcrumb bar (shown temporarily on unzoomed tabs) with the
-/// current root selected, so a path can be typed or pasted.
-pub fn begin_path_edit(app: &mut App, pane: PaneId) {
+/// Puts the caret at the end of an edit's text.
+fn caret_to_end(edit: HWND) {
+    let n = get_text(edit).encode_utf16().count();
+    unsafe {
+        SendMessageW(edit, EM_SETSEL, WPARAM(n), LPARAM(n as isize));
+    }
+}
+
+/// Opens an editor over `pane`'s breadcrumb bar. With `filter`, it holds the tab's filter as
+/// ":text" ("::text" when searching subfolders) and filters as you type; otherwise it holds the
+/// current root, selected, so a path can be typed or pasted. Typing ":" turns it into a filter.
+pub fn begin_path_edit(app: &mut App, pane: PaneId, filter: bool) {
     let Some(tid) = active_tid(app, pane) else { return };
+    let Some(initial) = app.tabs.get(&tid).map(|t| if filter { filter_text(t.deep, &t.filter) } else { t.root.clone().unwrap_or_default() }) else {
+        return;
+    };
     if let Some(pe) = app.grid_ui.path_edit.as_ref().filter(|pe| pe.tab == tid) {
         let edit = isize_to_hwnd(pe.edit);
+        if filter {
+            if !get_text(edit).starts_with(':') {
+                set_text(edit, &initial);
+            }
+            caret_to_end(edit);
+        } else {
+            unsafe {
+                SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+            }
+        }
         unsafe {
-            SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
             let _ = SetFocus(edit);
         }
         return;
     }
     close_path_edit(app);
     let Some(grid) = app.panes.get(&pane).map(|p| p.grid()) else { return };
-    let Some(root) = app.tabs.get(&tid).map(|t| t.root.clone().unwrap_or_default()) else { return };
     unsafe {
-        let text = wide(&root);
+        let text = wide(&initial);
         let Ok(edit) = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("EDIT"),
@@ -1913,21 +2125,26 @@ pub fn begin_path_edit(app: &mut App, pane: PaneId) {
         };
         SendMessageW(edit, WM_SETFONT, WPARAM(app.fonts.ui.0 as usize), LPARAM(1));
         crate::theme::set_control_theme(edit, app.dark, "DarkMode_CFD");
-        let cue = wide("Type or paste a path, e.g. C:\\Users or %TEMP%");
+        let cue = wide("Type a path, or :text to filter this tab (::text searches subfolders)");
         SendMessageW(edit, EM_SETCUEBANNER, WPARAM(1), LPARAM(cue.as_ptr() as isize));
         let _ = SetWindowSubclass(edit, Some(path_edit_proc), 1, 0);
         if let Some(t) = app.tabs.get_mut(&tid) {
             t.editing_path = true;
         }
-        app.grid_ui.path_edit = Some(PathEdit { edit: hwnd_to_isize(edit), pane, tab: tid });
+        app.grid_ui.path_edit = Some(PathEdit { edit: hwnd_to_isize(edit), pane, tab: tid, filter_mode: filter });
         sync(app, pane);
         // Select only once sized, so the start of the path stays in view.
-        SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+        if filter {
+            caret_to_end(edit);
+        } else {
+            SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+        }
         let _ = SetFocus(edit);
     }
 }
 
-/// Positions the path editor over its pane's breadcrumb bar (hidden while another tab is shown).
+/// Positions the path editor over its pane's breadcrumb bar (hidden while another tab is shown),
+/// left of the "Subfolders" checkbox while filtering.
 fn place_path_edit(app: &mut App) {
     let Some(pe) = &app.grid_ui.path_edit else { return };
     let (edit, pane, tid) = (isize_to_hwnd(pe.edit), pe.pane, pe.tab);
@@ -1935,6 +2152,12 @@ fn place_path_edit(app: &mut App) {
     let w = app.panes.get(&pane).map_or(0, |p| client_rect(p.grid()).right);
     let h = app.panes.get(&pane).map_or(0, |p| client_rect(p.grid()).bottom);
     let mut b = crumb_box(app, w, h);
+    if shown {
+        let (_, ex) = bar_layout_of(app, pane);
+        if ex.deep.is_some() {
+            b.right = ex.right;
+        }
+    }
     b.right = b.right.max(b.left);
     unsafe {
         if shown {
@@ -1946,15 +2169,79 @@ fn place_path_edit(app: &mut App) {
     }
 }
 
-/// Enter (`go`) goes to the typed path, keeping the editor open if it can't be found; otherwise cancels.
-fn finish_path_edit(app: &mut App, go: bool) {
+/// Ends editing. `go`: 1 = Enter, 0 = Esc, 2 = lost focus. A filter is kept on Enter or focus loss
+/// and cleared on Esc; a path is opened on Enter, keeping the editor open if it can't be found.
+fn finish_path_edit(app: &mut App, go: usize) {
     let Some(pe) = &app.grid_ui.path_edit else { return };
-    let (edit, tid) = (isize_to_hwnd(pe.edit), pe.tab);
-    if go && !app.go_to(tid, &get_text(edit)) {
+    let (edit, tid, filter_mode) = (isize_to_hwnd(pe.edit), pe.tab, pe.filter_mode);
+    if filter_mode {
+        if go == 0 {
+            app.clear_filter(tid);
+        }
+    } else if go == 1 && !app.go_to(tid, &get_text(edit)) {
         balloon(edit, "Go to", "That path doesn't exist or can't be opened.");
         return;
     }
     close_path_edit(app);
+}
+
+/// Filters as you type once the editor's text starts with ":"; deleting the ":" clears the filter.
+fn on_path_text_changed(app: &mut App, edit: isize) {
+    let Some(pe) = app.grid_ui.path_edit.as_ref().filter(|pe| pe.edit == edit) else { return };
+    let (tid, pane, was) = (pe.tab, pe.pane, pe.filter_mode);
+    let text = get_text(isize_to_hwnd(edit));
+    let now = match parse_filter(&text) {
+        Some((deep, q)) => {
+            app.set_deep(tid, deep);
+            app.set_filter(tid, q);
+            true
+        }
+        None => {
+            if was {
+                app.clear_filter(tid);
+            }
+            false
+        }
+    };
+    if now != was {
+        if let Some(pe) = app.grid_ui.path_edit.as_mut() {
+            pe.filter_mode = now;
+        }
+        place_path_edit(app);
+        if let Some(g) = app.panes.get(&pane).map(|p| p.grid()) {
+            invalidate(g);
+        }
+    }
+}
+
+/// Toggles searching subfolders (Alt+S, or the bar's checkbox), keeping an open filter editor's
+/// ":"/"::" prefix in step.
+pub fn toggle_deep(app: &mut App, tid: TabId) {
+    app.toggle_deep(tid);
+    let Some(pe) = app.grid_ui.path_edit.as_ref().filter(|pe| pe.tab == tid && pe.filter_mode) else { return };
+    let edit = isize_to_hwnd(pe.edit);
+    let Some(t) = app.tabs.get(&tid) else { return };
+    let want = filter_text(t.deep, &t.filter);
+    if get_text(edit) != want {
+        set_text(edit, &want);
+        caret_to_end(edit);
+    }
+}
+
+/// Status-bar hint for the hovered filter chip or "Subfolders" checkbox.
+pub fn bar_hint(app: &App) -> Option<String> {
+    let (pane, hot) = app.grid_ui.bar_hover?;
+    let t = active_tid(app, pane).and_then(|t| app.tabs.get(&t))?;
+    Some(match hot {
+        BarHot::Crumb(_) => return None,
+        BarHot::Filter => "Edit filter (Ctrl+F)".to_string(),
+        BarHot::Clear => "Clear filter (Esc)".to_string(),
+        BarHot::Deep if t.deep => "Search subfolders is ON (Alt+S to turn off) — the filter also matches items inside collapsed folders".to_string(),
+        BarHot::Deep if t.root.is_none() || t.error.is_some() => {
+            "Search subfolders (Alt+S) — not available here: open a folder or drive first".to_string()
+        }
+        BarHot::Deep => "Search subfolders (Alt+S) — filter every item under this tab's folder".to_string(),
+    })
 }
 
 fn close_path_edit(app: &mut App) {
@@ -2004,7 +2291,7 @@ unsafe extern "system" fn path_edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
             SendMessageW(hwnd, EM_SETSEL, WPARAM(0), LPARAM(-1));
             return LRESULT(0);
         }
-        WM_KILLFOCUS => notify(0),
+        WM_KILLFOCUS => notify(2),
         WM_NCDESTROY => {
             let _ = RemoveWindowSubclass(hwnd, Some(path_edit_proc), id);
         }
@@ -2202,4 +2489,22 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         _ => {}
     }
     DefSubclassProc(hwnd, msg, wp, lp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_filter_reads_colon_prefixes() {
+        assert_eq!(parse_filter(":abc"), Some((false, "abc")));
+        assert_eq!(parse_filter("::abc"), Some((true, "abc")));
+        assert_eq!(parse_filter(":"), Some((false, "")));
+        assert_eq!(parse_filter("::"), Some((true, "")));
+        assert_eq!(parse_filter(":::x"), Some((true, ":x")));
+        assert_eq!(parse_filter("C:\\Users"), None);
+        assert_eq!(parse_filter(""), None);
+        assert_eq!(parse_filter(&filter_text(true, "q")), Some((true, "q")));
+        assert_eq!(parse_filter(&filter_text(false, "q")), Some((false, "q")));
+    }
 }

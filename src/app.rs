@@ -29,10 +29,6 @@ pub const TIMER_HOVER_TAB: usize = 3;
 const STATUS_MS: u32 = 5000;
 const WATCH_DEBOUNCE_MS: u32 = 200;
 
-/// Set when the filter box text changed but WM_FILTER_CHANGED hasn't applied it yet, so
-/// other queued messages (scan batches, listings) don't overwrite what the user just typed.
-pub static FILTER_EDIT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 thread_local! {
     static APP: RefCell<Option<Box<App>>> = const { RefCell::new(None) };
 }
@@ -357,7 +353,6 @@ pub struct App {
     pub status_error: bool,
     /// Our last "cut" clipboard object and the cut paths (keys) for ghosting.
     pub cut: Option<(IDataObject, HashSet<String>)>,
-    pub search_edit: HWND,
     pub grid_ui: crate::grid::GridUi,
     pub chrome: crate::mainwin::Chrome,
     op_meta: HashMap<u64, OpMeta>,
@@ -368,7 +363,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(hwnd: HWND, search_edit: HWND, dpi: u32, dark: bool, settings: Settings) -> Box<App> {
+    pub fn new(hwnd: HWND, dpi: u32, dark: bool, settings: Settings) -> Box<App> {
         let mut app = Box::new(App {
             hwnd,
             dpi,
@@ -385,7 +380,6 @@ impl App {
             status: String::new(),
             status_error: false,
             cut: None,
-            search_edit,
             grid_ui: Default::default(),
             chrome: Default::default(),
             op_meta: HashMap::new(),
@@ -518,7 +512,6 @@ impl App {
         crate::grid::end_rename(self, false);
         crate::grid::end_path_edit(self);
         crate::grid::sync(self, pane);
-        self.sync_search_edit();
         invalidate(self.hwnd);
         unsafe {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(grid);
@@ -528,7 +521,6 @@ impl App {
     pub fn activate_pane(&mut self, pane: PaneId) {
         if self.active_pane != pane && self.panes.contains_key(&pane) {
             self.active_pane = pane;
-            self.sync_search_edit();
             invalidate(self.hwnd);
             for p in self.panes.values() {
                 invalidate(p.grid());
@@ -1096,27 +1088,9 @@ impl App {
             }
             if self.panes[&pane].active_tab() == Some(tid) {
                 crate::grid::sync(self, pane);
-                if pane == self.active_pane {
-                    self.sync_search_edit();
-                }
             }
         }
         invalidate(self.hwnd);
-    }
-
-    pub fn sync_search_edit(&mut self) {
-        let tab = self.active_tab().and_then(|t| self.tabs.get(&t));
-        let text = tab.map(|t| t.filter.clone()).unwrap_or_default();
-        let was_shown = self.chrome.filter_active || self.chrome.deep_active;
-        self.chrome.filter_active = !text.is_empty();
-        self.chrome.deep_active = tab.is_some_and(|t| t.deep);
-        self.chrome.deep_available = tab.is_some_and(|t| t.root.is_some() && t.error.is_none());
-        if was_shown != (self.chrome.filter_active || self.chrome.deep_active) {
-            crate::mainwin::layout_search(self);
-        }
-        if !FILTER_EDIT_PENDING.load(std::sync::atomic::Ordering::Relaxed) && get_text(self.search_edit) != text {
-            set_text(self.search_edit, &text);
-        }
     }
 
     /// Clears the filter and turns subfolder search off (Esc, the × button).
@@ -1141,6 +1115,13 @@ impl App {
             self.start_scan(tid);
         }
         self.after_change(tid);
+    }
+
+    /// Turns subfolder search on or off (no-op if already so).
+    pub fn set_deep(&mut self, tid: TabId, on: bool) {
+        if self.tabs.get(&tid).is_some_and(|t| t.deep != on) {
+            self.toggle_deep(tid);
+        }
     }
 
     /// Starts (or restarts) the background scan behind subfolder search.
@@ -1466,7 +1447,7 @@ impl App {
         let t = self.active_tab().and_then(|t| self.tabs.get(&t)).filter(|t| !t.filter.is_empty() || t.deep)?;
         let f = &t.filtered;
         let mut s = if t.filter.is_empty() {
-            "Subfolder search on \u{2014} type in the filter box to search all subfolders".to_string()
+            "Subfolder search on \u{2014} press Ctrl+F and type to search all subfolders".to_string()
         } else {
             let hidden: usize = f.hidden.iter().map(|h| h.1).sum();
             format!("Filter \u{201C}{}\u{201D}: {} of {} items match, {} hidden", t.filter, format_count(f.matched), format_count(f.total), format_count(hidden))
@@ -1481,7 +1462,7 @@ impl App {
                 s += &format!(" \u{00B7} {} folder(s) couldn't be read", format_count(sc.errors));
             }
         }
-        s += " \u{2014} Esc in the filter box clears it";
+        s += " \u{2014} Esc clears it";
         Some(s)
     }
 
