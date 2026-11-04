@@ -771,6 +771,39 @@ impl App {
         true
     }
 
+    /// Re-roots `tid` at an ancestor of its root (`None` = This PC), keeping the folder it came
+    /// from expanded into view and selected.
+    pub fn navigate_up(&mut self, tid: TabId, target: Option<&str>) -> bool {
+        let from = self.tabs.get(&tid).and_then(|t| t.root.clone());
+        if !self.navigate(tid, target, target.is_some()) {
+            return false;
+        }
+        let Some(from) = from else { return true };
+        let top = target.map(path_key);
+        if top.as_deref() == Some(path_key(&from).as_str()) || target.is_some_and(|t| !is_same_or_inside(&from, t)) {
+            return true;
+        }
+        let mut between = Vec::new();
+        let mut p = parent_path(&from);
+        while let Some(dir) = p {
+            let key = path_key(&dir);
+            if top.as_deref() == Some(key.as_str()) {
+                break;
+            }
+            p = parent_path(&dir);
+            between.push(key);
+        }
+        let key = path_key(&from);
+        if let Some(t) = self.tabs.get_mut(&tid) {
+            t.want_expanded.extend(between);
+            t.pending_select = vec![key.clone()];
+            t.reveal = Some((key, Reveal::Center));
+        }
+        self.process_wants(tid);
+        self.after_change(tid);
+        true
+    }
+
     /// Goes to a typed or pasted path (quotes and %VARS% allowed; empty = This PC). Folders and
     /// archives become the tab root; a file roots the tab at its folder with the file selected.
     pub fn go_to(&mut self, tid: TabId, text: &str) -> bool {

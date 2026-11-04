@@ -1382,7 +1382,7 @@ fn on_lbutton(app: &mut App, pane: PaneId, x: i32, y: i32) -> bool {
     match hit(app, pane, x, y) {
         Hit::Crumb { target, .. } => {
             app.grid_ui.swallow_dbl = true;
-            app.navigate(tid, target.as_deref(), target.is_some());
+            app.navigate_up(tid, target.as_deref());
             false
         }
         Hit::CrumbBar => {
