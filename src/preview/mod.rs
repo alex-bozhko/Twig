@@ -66,7 +66,8 @@ const PLACEHOLDER_MS: u32 = 250;
 const TITLE_H: i32 = 44;
 const BUTTON_W: i32 = 40;
 const EDGE: i32 = 6;
-const DOC: (i32, i32) = (800, 860);
+/// Share of the work area a document preview takes by default, the same both ways.
+const DOC_PERCENT: i32 = 80;
 const CARD_W: i32 = 520;
 const MIN_CONTENT: (i32, i32) = (360, 240);
 const MONO_PX: i32 = 13;
@@ -111,7 +112,7 @@ impl Drop for State {
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     /// Size the user gave document previews (96-DPI pixels), kept for the session.
-    static DOC_SIZE: Cell<(i32, i32)> = const { Cell::new(DOC) };
+    static DOC_SIZE: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
 }
 
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
@@ -151,7 +152,7 @@ impl State {
 
 fn make_viewer(t: &Target, p: Payload) -> Box<dyn Viewer> {
     match p {
-        Payload::Text { lines, max_cols, truncated, total } => Box::new(text::TextView::new(lines, max_cols, truncated, total)),
+        Payload::Text { lines, truncated, total } => Box::new(text::TextView::new(lines, truncated, total)),
         Payload::Image { pixels, orig_w, orig_h } => Box::new(image::ImageView::new(pixels, orig_w, orig_h)),
         Payload::Info { thumb, extra, note } => Box::new(info::InfoView::new(t, thumb, extra, note)),
     }
@@ -236,10 +237,10 @@ fn layout(hwnd: HWND) {
             let (fw, fh) = image::fit((w, h), (ww * 7 / 10, wh * 8 / 10 - th));
             (fw.max(scale(MIN_CONTENT.0, dpi)), fh.max(scale(MIN_CONTENT.1, dpi)))
         }
-        Pref::Doc => {
-            let (w, h) = DOC_SIZE.with(|d| d.get());
-            (scale(w, dpi), scale(h, dpi) - th)
-        }
+        Pref::Doc => match DOC_SIZE.with(|d| d.get()) {
+            Some((w, h)) => (scale(w, dpi), scale(h, dpi) - th),
+            None => (ww * DOC_PERCENT / 100, wh * DOC_PERCENT / 100 - th),
+        },
         Pref::Card(h) => (scale(CARD_W, dpi), scale(h, dpi)),
     };
     let (w, h) = (cw.min(ww), (ch + th).min(wh));
@@ -341,7 +342,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_EXITSIZEMOVE => {
             if let Some((true, dpi)) = with_state(|s| (s.is_doc, s.dpi)) {
                 let r = client_rect(hwnd);
-                DOC_SIZE.with(|d| d.set(((r.right * 96 / dpi as i32).max(320), (r.bottom * 96 / dpi as i32).max(200))));
+                DOC_SIZE.with(|d| d.set(Some(((r.right * 96 / dpi as i32).max(320), (r.bottom * 96 / dpi as i32).max(200)))));
             }
             return LRESULT(0);
         }

@@ -20,7 +20,6 @@ use windows::Win32::UI::Shell::{IShellItemImageFactory, SIIGBF_RESIZETOFIT};
 /// Bytes of a text file that are shown.
 pub const TEXT_LIMIT: u64 = 1024 * 1024;
 const MAX_LINES: usize = 100_000;
-const MAX_COLS: usize = 2000;
 const TAB: usize = 4;
 /// Largest image read out of an archive into memory.
 const ZIP_IMAGE_LIMIT: u64 = 64 * 1024 * 1024;
@@ -75,7 +74,7 @@ pub struct Pixels {
 }
 
 pub enum Payload {
-    Text { lines: Vec<Vec<u16>>, max_cols: usize, truncated: bool, total: u64 },
+    Text { lines: Vec<Vec<u16>>, truncated: bool, total: u64 },
     Image { pixels: Pixels, orig_w: u32, orig_h: u32 },
     Info { thumb: Option<Pixels>, extra: Vec<(String, String)>, note: Option<String> },
 }
@@ -201,13 +200,12 @@ fn ansi(b: &[u8]) -> Vec<u16> {
 }
 
 /// Splits text into display lines: any line break style, tabs expanded, control characters
-/// blanked, long lines cut. Returns (lines, widest line, cut short).
-pub fn prepare_lines(text: &[u16]) -> (Vec<Vec<u16>>, usize, bool) {
+/// blanked. Returns (lines, cut short).
+pub fn prepare_lines(text: &[u16]) -> (Vec<Vec<u16>>, bool) {
     const CR: u16 = b'\r' as u16;
     const LF: u16 = b'\n' as u16;
     let mut lines = Vec::new();
     let mut cur: Vec<u16> = Vec::new();
-    let mut widest = 0;
     let mut i = 0;
     while i < text.len() {
         let c = text[i];
@@ -216,14 +214,10 @@ pub fn prepare_lines(text: &[u16]) -> (Vec<Vec<u16>>, usize, bool) {
             if c == CR && text.get(i) == Some(&LF) {
                 i += 1;
             }
-            widest = widest.max(cur.len());
             lines.push(std::mem::take(&mut cur));
             if lines.len() >= MAX_LINES {
-                return (lines, widest, i < text.len());
+                return (lines, i < text.len());
             }
-            continue;
-        }
-        if cur.len() >= MAX_COLS {
             continue;
         }
         if c == b'\t' as u16 {
@@ -236,10 +230,9 @@ pub fn prepare_lines(text: &[u16]) -> (Vec<Vec<u16>>, usize, bool) {
         }
     }
     if !cur.is_empty() || lines.is_empty() {
-        widest = widest.max(cur.len());
         lines.push(cur);
     }
-    (lines, widest, false)
+    (lines, false)
 }
 
 // ---------- Loading ----------
@@ -327,8 +320,8 @@ fn load_text(t: &Target, by_extension: bool) -> Result<Payload, String> {
         return Err(String::new());
     }
     let text = decode_text(&bytes).ok_or_else(String::new)?;
-    let (lines, max_cols, cut) = prepare_lines(&text);
-    Ok(Payload::Text { lines, max_cols, truncated: cut || total > bytes.len() as u64, total })
+    let (lines, cut) = prepare_lines(&text);
+    Ok(Payload::Text { lines, truncated: cut || total > bytes.len() as u64, total })
 }
 
 fn load_image(t: &Target) -> Result<Payload, String> {
@@ -497,14 +490,11 @@ mod tests {
 
     #[test]
     fn prepares_lines() {
-        let (lines, widest, cut) = prepare_lines(&w("a\tb\r\nxy\rz\n\tq\x07\n"));
+        let (lines, cut) = prepare_lines(&w("a\tb\r\nxy\rz\n\tq\x07\n"));
         let s: Vec<String> = lines.iter().map(|l| String::from_utf16_lossy(l)).collect();
         assert_eq!(s, ["a   b", "xy", "z", "    q "]);
-        assert_eq!(widest, 6);
         assert!(!cut);
         assert_eq!(prepare_lines(&[]).0.len(), 1);
-        let long = "x".repeat(MAX_COLS + 50);
-        assert_eq!(prepare_lines(&w(&long)).0[0].len(), MAX_COLS);
     }
 
     #[test]

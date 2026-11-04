@@ -99,11 +99,12 @@ file operations.
 - `Space` previews the selected item in a Finder-style pop-up; `Space` or
   `Esc` closes it. Arrow keys keep working and the preview follows the
   selection.
-- Text and source files (with line numbers) and images (PNG, JPEG, GIF, BMP,
+- Text and source files (with line numbers, long lines wrapped) and images (PNG, JPEG, GIF, BMP,
   TIFF, ICO, WebP…) are rendered, including entries inside zip archives;
   anything else gets an info card with icon, size and dates.
-- The open button launches the item; the window can be moved and resized and
-  remembers its document size for the session.
+- Documents open at 80% of the screen; the open button launches the item; the
+  window can be moved and resized and remembers its document size for the
+  session.
 
 ### Zip archives
 
