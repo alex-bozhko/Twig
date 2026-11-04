@@ -49,6 +49,8 @@ pub struct OpResult {
     /// Set when this was an undo; `undo` then holds an entry to push back if nothing was undone.
     pub was_undo: bool,
     pub message: Option<String>,
+    /// Entry for the action log; `None` when nothing happened (e.g. cancelled).
+    pub log: Option<crate::actionlog::Entry>,
 }
 
 fn results() -> &'static Mutex<Vec<OpResult>> {
@@ -97,6 +99,8 @@ struct SinkState {
     requested: HashSet<String>,
     recs: Vec<Rec>,
     created: Vec<String>,
+    /// Requested items that completed, as (source, result); either side may be empty.
+    done: Vec<(String, String)>,
 }
 
 #[implement(IFileOperationProgressSink)]
@@ -107,12 +111,13 @@ impl Sink {
         let p = item_path(item?)?;
         self.0.lock().unwrap().requested.contains(&path_key(&p)).then_some(p)
     }
-    fn record(&self, rec: Rec, created: Option<String>) {
+    fn record(&self, rec: Option<Rec>, created: Option<String>, done: (String, String)) {
         let mut s = self.0.lock().unwrap();
-        s.recs.push(rec);
+        s.recs.extend(rec);
         if let Some(c) = created {
             s.created.push(c);
         }
+        s.done.push(done);
     }
 }
 
@@ -129,7 +134,7 @@ impl IFileOperationProgressSink_Impl for Sink_Impl {
     fn PostRenameItem(&self, _f: u32, item: Option<&IShellItem>, _n: &PCWSTR, hr: HRESULT, newly: Option<&IShellItem>) -> windows::core::Result<()> {
         if hr.is_ok() {
             if let (Some(from), Some(to)) = (self.requested(item), newly.and_then(item_path)) {
-                self.record(Rec::Moved { from, to: to.clone() }, Some(to));
+                self.record(Some(Rec::Moved { from: from.clone(), to: to.clone() }), Some(to.clone()), (from, to));
             }
         }
         Ok(())
@@ -140,7 +145,7 @@ impl IFileOperationProgressSink_Impl for Sink_Impl {
     fn PostMoveItem(&self, _f: u32, item: Option<&IShellItem>, _d: Option<&IShellItem>, _n: &PCWSTR, hr: HRESULT, newly: Option<&IShellItem>) -> windows::core::Result<()> {
         if hr.is_ok() {
             if let (Some(from), Some(to)) = (self.requested(item), newly.and_then(item_path)) {
-                self.record(Rec::Moved { from, to: to.clone() }, Some(to));
+                self.record(Some(Rec::Moved { from: from.clone(), to: to.clone() }), Some(to.clone()), (from, to));
             }
         }
         Ok(())
@@ -149,9 +154,9 @@ impl IFileOperationProgressSink_Impl for Sink_Impl {
         Ok(())
     }
     fn PostCopyItem(&self, _f: u32, item: Option<&IShellItem>, _d: Option<&IShellItem>, _n: &PCWSTR, hr: HRESULT, newly: Option<&IShellItem>) -> windows::core::Result<()> {
-        if hr.is_ok() && self.requested(item).is_some() {
-            if let Some(to) = newly.and_then(item_path) {
-                self.record(Rec::Created { path: to.clone() }, Some(to));
+        if hr.is_ok() {
+            if let (Some(from), Some(to)) = (self.requested(item), newly.and_then(item_path)) {
+                self.record(Some(Rec::Created { path: to.clone() }), Some(to.clone()), (from, to));
             }
         }
         Ok(())
@@ -161,9 +166,10 @@ impl IFileOperationProgressSink_Impl for Sink_Impl {
     }
     fn PostDeleteItem(&self, f: u32, item: Option<&IShellItem>, hr: HRESULT, newly: Option<&IShellItem>) -> windows::core::Result<()> {
         const TSF_DELETE_RECYCLE_IF_POSSIBLE: u32 = 0x80;
-        if hr.is_ok() && f & TSF_DELETE_RECYCLE_IF_POSSIBLE != 0 {
+        if hr.is_ok() {
             if let Some(original) = self.requested(item) {
-                self.record(Rec::Recycled { original, bin: newly.and_then(item_path) }, None);
+                let rec = (f & TSF_DELETE_RECYCLE_IF_POSSIBLE != 0).then(|| Rec::Recycled { original: original.clone(), bin: newly.and_then(item_path) });
+                self.record(rec, None, (original, String::new()));
             }
         }
         Ok(())
@@ -174,7 +180,7 @@ impl IFileOperationProgressSink_Impl for Sink_Impl {
     fn PostNewItem(&self, _f: u32, _d: Option<&IShellItem>, _n: &PCWSTR, _t: &PCWSTR, _a: u32, hr: HRESULT, newly: Option<&IShellItem>) -> windows::core::Result<()> {
         if hr.is_ok() {
             if let Some(p) = newly.and_then(item_path) {
-                self.record(Rec::Created { path: p.clone() }, Some(p));
+                self.record(Some(Rec::Created { path: p.clone() }), Some(p.clone()), (String::new(), p));
             }
         }
         Ok(())
@@ -234,12 +240,11 @@ impl Batch {
         }
     }
 
-    /// Runs queued operations. Returns (records, created paths, dirs, error, aborted).
-    /// User cancellation isn't reported as an error.
-    fn perform(self) -> (Vec<Rec>, Vec<String>, Vec<String>, Option<String>, bool) {
+    /// Runs queued operations. User cancellation isn't reported as an error.
+    fn perform(self) -> Outcome {
         let res = unsafe { self.op.PerformOperations() };
         let mut aborted = unsafe { self.op.GetAnyOperationsAborted() }.map(|b| b.as_bool()).unwrap_or(false);
-        let err = match res {
+        let error = match res {
             Err(e) if is_cancel(&e) => {
                 aborted = true;
                 None
@@ -248,8 +253,17 @@ impl Batch {
             _ => None,
         };
         let s = std::mem::take(&mut *self.state.lock().unwrap());
-        (s.recs, s.created, self.refresh, err, aborted)
+        Outcome { recs: s.recs, created: s.created, done: s.done, refresh: self.refresh, error, aborted }
     }
+}
+
+struct Outcome {
+    recs: Vec<Rec>,
+    created: Vec<String>,
+    done: Vec<(String, String)>,
+    refresh: Vec<String>,
+    error: Option<String>,
+    aborted: bool,
 }
 
 fn item_or_err(path: &str) -> Result<IShellItem, String> {
@@ -265,20 +279,22 @@ fn plural(n: usize) -> String {
 }
 
 fn empty_result() -> OpResult {
-    OpResult { tag: 0, refresh: Vec::new(), select: Vec::new(), error: None, undo: None, was_undo: false, message: None }
+    OpResult { tag: 0, refresh: Vec::new(), select: Vec::new(), error: None, undo: None, was_undo: false, message: None, log: None }
 }
 
 fn run(op: Op) -> OpResult {
-    match run_inner(op) {
+    match run_inner(&op) {
         Ok(r) => r,
-        Err(e) => OpResult { error: Some(e), ..empty_result() },
+        Err(e) => OpResult { log: crate::actionlog::describe(&op, &[], Some(&e)), error: Some(e), ..empty_result() },
     }
 }
 
-fn run_inner(op: Op) -> Result<OpResult, String> {
+fn run_inner(op: &Op) -> Result<OpResult, String> {
     let base = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR;
     let label;
-    let batch = match &op {
+    // The op as logged (moves into the item's own folder are dropped).
+    let mut logged = op.clone();
+    let batch = match op {
         Op::Undo(entry) => return Ok(run_undo(entry.clone())),
         Op::Copy { items, dest } | Op::Move { items, dest } => {
             let is_move = matches!(op, Op::Move { .. });
@@ -291,6 +307,9 @@ fn run_inner(op: Op) -> Result<OpResult, String> {
             }
             if items.is_empty() {
                 return Ok(empty_result());
+            }
+            if is_move {
+                logged = Op::Move { items: items.iter().map(|s| s.to_string()).collect(), dest: dest.clone() };
             }
             let same_folder = items.iter().any(|i| parent_path(i).is_some_and(|p| p.eq_ignore_ascii_case(dest)));
             let mut flags = base;
@@ -347,7 +366,7 @@ fn run_inner(op: Op) -> Result<OpResult, String> {
             b
         }
     };
-    let (recs, created, mut refresh, error, _) = batch.perform();
+    let Outcome { recs, created, done, mut refresh, error, .. } = batch.perform();
     for c in &created {
         if let Some(p) = parent_path(c) {
             if !refresh.iter().any(|d| d.eq_ignore_ascii_case(&p)) {
@@ -355,8 +374,9 @@ fn run_inner(op: Op) -> Result<OpResult, String> {
             }
         }
     }
+    let log = crate::actionlog::describe(&logged, &done, error.as_deref());
     let undo = (!recs.is_empty()).then(|| UndoEntry { label, recs });
-    Ok(OpResult { refresh, select: created, error, undo, ..empty_result() })
+    Ok(OpResult { refresh, select: created, error, undo, log, ..empty_result() })
 }
 
 /// Reverts records in reverse order. If nothing could be undone, the entry is handed back.
@@ -365,6 +385,8 @@ fn run_undo(entry: UndoEntry) -> OpResult {
     let mut select = Vec::new();
     let mut errors = Vec::new();
     let mut failed = Vec::new();
+    // Undone items as (where it was, where it is now).
+    let mut done = Vec::new();
     let mut touch = |p: Option<String>| {
         if let Some(p) = p {
             if !refresh.iter().any(|d| d.eq_ignore_ascii_case(&p)) {
@@ -377,15 +399,21 @@ fn run_undo(entry: UndoEntry) -> OpResult {
             Rec::Moved { from, to } => {
                 touch(parent_path(from));
                 touch(parent_path(to));
-                undo_move(from, to).map(|_| select.push(from.clone()))
+                undo_move(from, to).map(|_| {
+                    select.push(from.clone());
+                    done.push((to.clone(), from.clone()));
+                })
             }
             Rec::Created { path } => {
                 touch(parent_path(path));
-                undo_create(path)
+                undo_create(path).map(|_| done.push((path.clone(), String::new())))
             }
             Rec::Recycled { original, bin } => {
                 touch(parent_path(original));
-                restore_from_recycle(original, bin.as_deref()).map(|_| select.push(original.clone()))
+                restore_from_recycle(original, bin.as_deref()).map(|_| {
+                    select.push(original.clone());
+                    done.push((String::new(), original.clone()));
+                })
             }
         };
         if let Err(e) = r {
@@ -393,6 +421,7 @@ fn run_undo(entry: UndoEntry) -> OpResult {
             failed.push(rec.clone());
         }
     }
+    done.reverse();
     let nothing = failed.len() == entry.recs.len();
     OpResult {
         refresh,
@@ -401,6 +430,7 @@ fn run_undo(entry: UndoEntry) -> OpResult {
         undo: nothing.then(|| entry.clone()),
         was_undo: true,
         message: (!nothing).then(|| format!("Undid {}", entry.label)),
+        log: Some(crate::actionlog::describe_undo(&entry.label, done, errors.first().cloned())),
         ..empty_result()
     }
 }
@@ -432,9 +462,10 @@ fn undo_create(path: &str) -> Result<(), String> {
 }
 
 fn finish(b: Batch) -> Result<(), String> {
-    match b.perform() {
-        (_, _, _, Some(e), _) => Err(e),
-        (_, _, _, None, true) => Err("Undo was cancelled".into()),
+    let o = b.perform();
+    match (o.error, o.aborted) {
+        (Some(e), _) => Err(e),
+        (None, true) => Err("Undo was cancelled".into()),
         _ => Ok(()),
     }
 }

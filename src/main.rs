@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod actionlog;
 mod app;
 mod defaultapp;
 mod dragdrop;
@@ -8,6 +9,7 @@ mod grid;
 mod instance;
 mod layout;
 mod loader;
+mod logwin;
 mod mainwin;
 mod model;
 mod scan;

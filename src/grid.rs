@@ -936,7 +936,7 @@ pub fn node_at(app: &mut App, pane: PaneId, x: i32, y: i32) -> Option<NodeId> {
 
 // ---------- Painting ----------
 
-fn format_time(ft: u64) -> String {
+pub(crate) fn format_time(ft: u64) -> String {
     if ft == 0 {
         return String::new();
     }

@@ -938,6 +938,37 @@ impl App {
         true
     }
 
+    /// Shows where a logged action happened in the active tab: roots it at the folder holding the
+    /// affected items (results first, else the originals) with them selected, else at the folder
+    /// the action happened in (or its nearest existing ancestor).
+    pub fn jump_to_log(&mut self, e: &crate::actionlog::Entry) {
+        let Some(tid) = self.active_tab() else { return };
+        let exists = |p: &&String| !p.is_empty() && loader::entry_for_path(p).is_some();
+        let mut targets: Vec<&String> = e.items.iter().map(|(_, to)| to).filter(exists).collect();
+        if targets.is_empty() {
+            targets = e.items.iter().map(|(from, _)| from).filter(exists).collect();
+        }
+        if let Some(parent) = targets.first().and_then(|p| parent_path(p)) {
+            let keys: Vec<String> = targets.iter().filter(|p| parent_path(p).as_deref() == Some(parent.as_str())).map(|p| path_key(p)).collect();
+            if !self.navigate(tid, Some(&parent), true) {
+                return;
+            }
+            if let Some(t) = self.tabs.get_mut(&tid) {
+                t.reveal = keys.first().map(|k| (k.clone(), Reveal::Center));
+                t.pending_select = keys;
+            }
+            self.process_wants(tid);
+            self.after_change(tid);
+            return;
+        }
+        match e.folder.as_deref().and_then(nearest_existing) {
+            Some(dir) => {
+                self.navigate(tid, Some(&dir), true);
+            }
+            None => self.set_status_error("That location no longer exists".into()),
+        }
+    }
+
     /// Re-roots `tid` at `path`'s nearest existing ancestor (used when the root disappears).
     fn recover_root(&mut self, tid: TabId) {
         let Some(t) = self.tabs.get(&tid) else { return };
@@ -1538,6 +1569,10 @@ impl App {
         for r in fileops::take_results() {
             let meta = self.op_meta.remove(&r.tag);
             let tid = (r.tag & 0xFFFF_FFFF) as TabId;
+            if let Some(entry) = r.log {
+                crate::actionlog::push(entry);
+                crate::logwin::refresh();
+            }
             if let Some(u) = r.undo {
                 self.undo.push(u);
                 if self.undo.len() > 100 {

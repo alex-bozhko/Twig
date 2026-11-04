@@ -70,7 +70,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATE.with(|s| s.try_borrow_mut().ok().and_then(|mut s| s.as_mut().map(f)))
 }
 
-fn heading_font(ui: HFONT) -> HFONT {
+pub(crate) fn heading_font(ui: HFONT) -> HFONT {
     let mut lf = LOGFONTW::default();
     unsafe {
         GetObjectW(ui, std::mem::size_of::<LOGFONTW>() as i32, Some(&mut lf as *mut _ as *mut _));

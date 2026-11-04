@@ -161,6 +161,14 @@ pub mod glyph {
     pub const CHECK: &str = "\u{E73E}";
     pub const WARNING: &str = "\u{E7BA}";
     pub const INFO: &str = "\u{E946}";
+    pub const HISTORY: &str = "\u{E81C}";
+    pub const COPY: &str = "\u{E8C8}";
+    pub const MOVE: &str = "\u{E8DE}";
+    pub const RENAME: &str = "\u{E8AC}";
+    pub const DELETE: &str = "\u{E74D}";
+    pub const NEW_FOLDER: &str = "\u{E8F4}";
+    pub const NEW_FILE: &str = "\u{E8A5}";
+    pub const UNDO: &str = "\u{E7A7}";
 }
 
 /// Reads the "apps use light theme" preference.

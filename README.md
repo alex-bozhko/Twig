@@ -82,6 +82,17 @@ file operations.
 - All operations run on a background thread via `IFileOperation`; the UI never
   blocks.
 
+### Action log
+
+- Every copy, move, rename, recycle, permanent delete, new folder / file and
+  undo is recorded, including failures with their error.
+- Open with the clock button left of the gear or `Ctrl+H`. Newest first,
+  with time and location; "Clear log" empties it.
+- Click an entry (or `Enter`) to jump there: the active tab opens the folder
+  and selects the resulting items (or the originals, or the nearest folder
+  that still exists).
+- Kept across restarts (last 500 entries) in `%LOCALAPPDATA%\Twig\log.json`.
+
 ### Zip archives
 
 - Zip files expand like folders without unpacking on disk.

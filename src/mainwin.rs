@@ -44,6 +44,7 @@ enum Hot {
     Splitter(usize),
     Strip(PaneId),
     Gear,
+    Log,
 }
 
 struct TabRect {
@@ -82,6 +83,8 @@ pub struct Chrome {
     status: RECT,
     /// Settings button at the right end of the status bar.
     gear: RECT,
+    /// Action log button, left of the gear.
+    log: RECT,
     panes: Vec<PaneChrome>,
     splitters: Vec<Splitter>,
     hot: Option<Hot>,
@@ -116,6 +119,7 @@ pub fn relayout(app: &mut App) {
     let c = &mut app.chrome;
     c.status = rc(0, h - sb, w, sb);
     c.gear = rc(w - scale(32, d), h - sb + 1, scale(32, d), sb - 1);
+    c.log = rc(w - scale(64, d), h - sb + 1, scale(32, d), sb - 1);
 
     let area = Rect::new(0, 0, w, h - sb);
     let mut rects = Vec::new();
@@ -208,6 +212,9 @@ fn hit(c: &Chrome, x: i32, y: i32) -> Option<Hot> {
     }
     if pt_in(&c.gear, x, y) {
         return Some(Hot::Gear);
+    }
+    if pt_in(&c.log, x, y) {
+        return Some(Hot::Log);
     }
     for pc in &c.panes {
         if !pt_in(&pc.strip, x, y) {
@@ -362,17 +369,19 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         None => (&app.status, if app.status_error { pal.error } else { pal.text_dim }),
     };
     let mut sr = sr;
-    if c.hot == Some(Hot::Gear) {
-        fill(hdc, &c.gear, if c.pressed == Some(Hot::Gear) { pal.sel_inactive } else { pal.hover });
-    }
     unsafe {
         SelectObject(hdc, app.fonts.glyph_mid);
     }
-    draw_text(hdc, glyph::GEAR, &c.gear, if c.hot == Some(Hot::Gear) { pal.text } else { pal.text_dim }, DT_CENTER_V);
+    for (h, r, g) in [(Hot::Gear, &c.gear, glyph::GEAR), (Hot::Log, &c.log, glyph::HISTORY)] {
+        if c.hot == Some(h) {
+            fill(hdc, r, if c.pressed == Some(h) { pal.sel_inactive } else { pal.hover });
+        }
+        draw_text(hdc, g, r, if c.hot == Some(h) { pal.text } else { pal.text_dim }, DT_CENTER_V);
+    }
     unsafe {
         SelectObject(hdc, app.fonts.ui);
     }
-    sr.right = c.gear.left - scale(4, d);
+    sr.right = c.log.left - scale(4, d);
     if !c.summary.is_empty() {
         draw_text(hdc, &c.summary, &sr, pal.text_dim, DT_RIGHT_V);
         sr.right -= text_width(hdc, app.fonts.ui, &c.summary) + scale(24, d);
@@ -491,7 +500,7 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
     with_app(|app| {
         let h = hit(&app.chrome, x, y);
         match h {
-            Some(Hot::TabClose(..)) | Some(Hot::Plus(_)) | Some(Hot::Gear) => {
+            Some(Hot::TabClose(..)) | Some(Hot::Plus(_)) | Some(Hot::Gear) | Some(Hot::Log) => {
                 app.chrome.pressed = h;
                 unsafe {
                     SetCapture(hwnd);
@@ -577,7 +586,7 @@ fn on_mouse_move(hwnd: HWND, x: i32, y: i32) {
 }
 
 fn on_button_up(hwnd: HWND, x: i32, y: i32) {
-    let settings = with_app(|app| {
+    let open = with_app(|app| {
         let pressed = app.chrome.pressed.take();
         let tab_drag = app.chrome.tab_drag.take();
         let split = app.chrome.split_drag.take();
@@ -587,7 +596,7 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
         show_overlay(app, None);
         invalidate(hwnd);
         if split.is_some() {
-            return false;
+            return None;
         }
         if let Some(td) = tab_drag {
             match td.spot.filter(|_| td.active) {
@@ -596,9 +605,9 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
                 Some(DropSpot::Dock(p, Some(side))) => app.split_with_tab(td.tab, p, side),
                 None => {}
             }
-            return false;
+            return None;
         }
-        let Some(pressed) = pressed.filter(|p| hit(&app.chrome, x, y) == Some(*p)) else { return false };
+        let Some(pressed) = pressed.filter(|p| hit(&app.chrome, x, y) == Some(*p)) else { return None };
         match pressed {
             Hot::TabClose(p, i) => {
                 if let Some(t) = app.panes.get(&p).and_then(|pp| pp.tabs.get(i).copied()) {
@@ -609,14 +618,23 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
                 app.activate_pane(p);
                 app.open_tab(None, SortKey::Name, false);
             }
-            Hot::Gear => return true,
+            Hot::Gear => return Some(Hot::Gear),
+            Hot::Log => return Some(Hot::Log),
             _ => {}
         }
-        false
+        None
     });
-    if settings == Some(true) {
-        open_settings(hwnd);
+    match open.flatten() {
+        Some(Hot::Gear) => open_settings(hwnd),
+        Some(Hot::Log) => open_log(hwnd),
+        _ => {}
     }
+}
+
+/// Opens (or focuses) the action log window.
+fn open_log(hwnd: HWND) {
+    let dark = with_app(|app| app.dark).unwrap_or(false);
+    crate::logwin::show(hwnd, dark);
 }
 
 /// Opens (or focuses) the settings window.
@@ -1117,6 +1135,11 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
         0xBC if !sh => {
             // Ctrl+, (VK_OEM_COMMA): settings
             open_settings(main);
+            true
+        }
+        0x48 if !sh => {
+            // Ctrl+H: action log
+            open_log(main);
             true
         }
         _ => false,
