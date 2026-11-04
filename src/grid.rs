@@ -1437,7 +1437,7 @@ fn on_lbutton(app: &mut App, pane: PaneId, x: i32, y: i32) -> bool {
     match hit(app, pane, x, y) {
         Hit::Crumb { target, .. } => {
             app.grid_ui.swallow_dbl = true;
-            app.navigate_up(tid, target.as_deref());
+            app.navigate_up(tid, target.as_deref(), false);
             false
         }
         Hit::CrumbBar => {
@@ -1828,7 +1828,7 @@ fn go_up(app: &mut App, tid: TabId) {
         app.navigate(tid, None, false);
     } else if crate::util::is_share_root(&path) {
         let server = crate::util::parent_path(&path);
-        app.navigate_up(tid, server.as_deref());
+        app.navigate_up(tid, server.as_deref(), true);
     } else {
         app.navigate(tid, Some(&path), false);
     }

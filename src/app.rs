@@ -893,15 +893,28 @@ impl App {
     }
 
     /// Re-roots `tid` at an ancestor of its root (`None` = This PC), keeping the folder it came
-    /// from expanded into view and selected.
-    pub fn navigate_up(&mut self, tid: TabId, target: Option<&str>) -> bool {
+    /// from expanded. With `select_from` that folder is selected and centred; otherwise nothing
+    /// is selected and the view stays at the top (the new root).
+    pub fn navigate_up(&mut self, tid: TabId, target: Option<&str>, select_from: bool) -> bool {
         let from = self.tabs.get(&tid).and_then(|t| t.root.clone());
         if !self.navigate(tid, target, target.is_some()) {
             return false;
         }
-        let Some(from) = from else { return true };
+        if !select_from {
+            if let Some(t) = self.tabs.get_mut(&tid) {
+                t.pending_select.clear();
+                t.tree.clear_selection();
+                t.reveal = None;
+                t.top = 0;
+            }
+        }
+        let Some(from) = from else {
+            self.after_change(tid);
+            return true;
+        };
         let top = target.map(path_key);
         if top.as_deref() == Some(path_key(&from).as_str()) || target.is_some_and(|t| !is_same_or_inside(&from, t)) {
+            self.after_change(tid);
             return true;
         }
         let mut between = Vec::new();
@@ -917,8 +930,10 @@ impl App {
         let key = path_key(&from);
         if let Some(t) = self.tabs.get_mut(&tid) {
             t.want_expanded.extend(between);
-            t.pending_select = vec![key.clone()];
-            t.reveal = Some((key, Reveal::Center));
+            if select_from {
+                t.pending_select = vec![key.clone()];
+                t.reveal = Some((key, Reveal::Center));
+            }
         }
         self.process_wants(tid);
         self.after_change(tid);

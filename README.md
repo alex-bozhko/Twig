@@ -19,7 +19,9 @@ file operations.
 - When zoomed into a folder, the tab shows an open-folder badge and the root row stays
   pinned at the top.
 - A clickable breadcrumb bar sits along the bottom of every pane (just the PC
-  icon on **This PC**).
+  icon on **This PC**). Clicking a parent segment re-roots the tab there,
+  scrolled to the top with nothing selected (the folder you came from stays
+  expanded).
 - Click the empty part of the breadcrumb bar (or press `Ctrl+L`) to type or
   paste a path. Quotes and `%VARS%` are fine, a file
   path opens its folder with the file selected, `Enter` goes there, and `Esc`
