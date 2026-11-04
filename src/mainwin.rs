@@ -263,15 +263,14 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         if active {
             fill(hdc, &r, pal.accent);
         } else {
-            // A toolbar-colored gutter with border edges, so panes read as separate.
+            // A toolbar-colored gutter with a single center line, so panes read as separate.
             fill(hdc, &r, pal.toolbar);
-            let (a, b) = if s.horizontal {
-                (rc(r.left, r.top, 1, r.bottom - r.top), rc(r.right - 1, r.top, 1, r.bottom - r.top))
+            let line = if s.horizontal {
+                rc((r.left + r.right) / 2, r.top, 1, r.bottom - r.top)
             } else {
-                (rc(r.left, r.top, r.right - r.left, 1), rc(r.left, r.bottom - 1, r.right - r.left, 1))
+                rc(r.left, (r.top + r.bottom) / 2, r.right - r.left, 1)
             };
-            fill(hdc, &a, pal.border);
-            fill(hdc, &b, pal.border);
+            fill(hdc, &line, pal.border);
         }
     }
 
