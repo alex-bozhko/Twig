@@ -87,7 +87,9 @@ file operations.
 ### Favorites
 
 - Right-click a folder → **Add to favorites** / **Remove from favorites**
-  (its own section in the menu). The tab's sort is remembered.
+  (its own section in the menu). A tab rooted at a favorite uses the
+  favorite's sort; changing the sort there updates the favorite (e.g. keep
+  Downloads sorted by date modified). A new favorite takes the current tab's sort.
 - **This PC** lists favorites below the drives, under a ★ Favorites header.
   They expand in place. They can't be renamed, deleted, cut
   or dragged away from there.

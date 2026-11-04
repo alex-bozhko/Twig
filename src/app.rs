@@ -677,8 +677,13 @@ impl App {
     /// Resets a tab to show `root` (None = This PC). The root must exist (or be None).
     fn set_root(&mut self, tid: TabId, root: Option<String>) {
         loader::cancel_tab(tid);
+        let fav = root.as_deref().and_then(|p| self.favorite_index(p)).map(|i| &self.settings.favorites[i]).map(|f| (f.sort, f.desc));
         let Some(t) = self.tabs.get_mut(&tid) else { return };
         t.tree.clear();
+        if let Some((sort, desc)) = fav {
+            t.tree.sort = sort;
+            t.tree.desc = desc;
+        }
         t.watchers.clear();
         t.want_expanded.clear();
         t.reveal = None;
@@ -1659,6 +1664,13 @@ impl App {
         if let Some(f) = t.focus {
             let key = path_key(&t.tree.get(f).map(|n| n.path.clone()).unwrap_or_default());
             t.reveal = Some((key, Reveal::Visible));
+        }
+        let (sort, desc, root) = (t.tree.sort, t.tree.desc, t.root.clone());
+        if let Some(i) = root.and_then(|r| self.favorite_index(&r)) {
+            let f = &mut self.settings.favorites[i];
+            f.sort = sort;
+            f.desc = desc;
+            self.save_settings();
         }
         self.process_wants(tid);
         self.after_change(tid);
