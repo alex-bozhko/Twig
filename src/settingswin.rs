@@ -4,6 +4,7 @@
 
 use crate::defaultapp::{self, Handler, Status};
 use crate::theme::{glyph, Fonts, Palette};
+use crate::updater::{self, Phase};
 use crate::win::*;
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
@@ -28,10 +29,11 @@ const BUTTON_H: i32 = 32;
 enum Action {
     MakeDefault,
     RestoreExplorer,
+    Update,
     ShowSettingsFile,
 }
 
-const ACTIONS: [Action; 3] = [Action::MakeDefault, Action::RestoreExplorer, Action::ShowSettingsFile];
+const ACTIONS: [Action; 4] = [Action::MakeDefault, Action::RestoreExplorer, Action::Update, Action::ShowSettingsFile];
 
 struct State {
     hwnd: HWND,
@@ -84,15 +86,37 @@ fn enabled(s: &State, a: Action) -> bool {
     match a {
         Action::MakeDefault => !s.status.all_twig(),
         Action::RestoreExplorer => s.status.any_twig(),
+        Action::Update => !updater::busy(),
         Action::ShowSettingsFile => true,
     }
 }
 
-fn label(a: Action) -> &'static str {
+fn label(a: Action) -> String {
     match a {
-        Action::MakeDefault => "Make Twig the default",
-        Action::RestoreExplorer => "Restore Explorer",
-        Action::ShowSettingsFile => "Open settings folder",
+        Action::MakeDefault => "Make Twig the default".into(),
+        Action::RestoreExplorer => "Restore Explorer".into(),
+        Action::Update => match updater::phase() {
+            Phase::Checking => "Checking\u{2026}".into(),
+            Phase::Available(r) => format!("Update to {}", r.version),
+            Phase::Downloading(_) => "Downloading\u{2026}".into(),
+            Phase::Restarting => "Restarting\u{2026}".into(),
+            Phase::Idle | Phase::UpToDate | Phase::Failed(_) => "Check for updates".into(),
+        },
+        Action::ShowSettingsFile => "Open settings folder".into(),
+    }
+}
+
+fn primary(a: Action) -> bool {
+    a == Action::MakeDefault || (a == Action::Update && matches!(updater::phase(), Phase::Available(_)))
+}
+
+/// The update status line: glyph, color and text.
+fn update_status(p: &Palette) -> Option<(&'static str, COLORREF, String)> {
+    match updater::phase() {
+        Phase::UpToDate => Some((glyph::CHECK, p.accent, "Twig is up to date.".into())),
+        Phase::Available(r) => Some((glyph::INFO, p.text_dim, format!("Version {} is available. Twig restarts to update.", r.version))),
+        Phase::Failed(e) => Some((glyph::WARNING, p.error, e)),
+        _ => None,
     }
 }
 
@@ -120,6 +144,7 @@ fn summary(st: &Status) -> (&'static str, Option<bool>, &'static str) {
 }
 
 const DT_PATH: DRAW_TEXT_FORMAT = DRAW_TEXT_FORMAT(DT_LEFT.0 | DT_VCENTER.0 | DT_PATH_ELLIPSIS.0);
+const DT_END: DRAW_TEXT_FORMAT = DRAW_TEXT_FORMAT(DT_LEFT.0 | DT_VCENTER.0 | DT_END_ELLIPSIS.0);
 
 /// Lays out (and with `draw`, paints) the content. Returns the button rects and content height.
 fn render(s: &State, hdc: HDC, draw: bool) -> (Vec<(Action, RECT)>, i32) {
@@ -153,10 +178,10 @@ fn render(s: &State, hdc: HDC, draw: bool) -> (Vec<(Action, RECT)>, i32) {
         let mut x = m;
         let h = scale(BUTTON_H, d);
         for &a in actions {
-            let w = text_width(hdc, s.fonts.ui, label(a)) + scale(36, d);
+            let w = text_width(hdc, s.fonts.ui, &label(a)) + scale(36, d);
             let r = rc(x, *y, w, h);
             if draw {
-                paint_button(s, hdc, a, &r, a == Action::MakeDefault);
+                paint_button(s, hdc, a, &r, primary(a));
             }
             buttons.push((a, r));
             x += w + scale(10, d);
@@ -200,8 +225,15 @@ fn render(s: &State, hdc: HDC, draw: bool) -> (Vec<(Action, RECT)>, i32) {
     field(&mut y, "Program", &s.exe, DT_PATH);
     field(&mut y, "Settings", &s.settings_file, DT_PATH);
     y += scale(14, d);
-    button_row(&mut y, &[Action::ShowSettingsFile]);
-    y += m;
+    button_row(&mut y, &[Action::Update, Action::ShowSettingsFile]);
+    // Always reserve the status line so the window doesn't resize.
+    y += scale(10, d);
+    if let Some((g, color, line)) = update_status(p) {
+        let r = RECT { left: m, top: y, right, bottom: y + row };
+        text(s.fonts.glyph, g, RECT { right: m + scale(20, d), ..r }, color, DT_LEFT_V);
+        text(s.fonts.ui, &line, RECT { left: m + scale(28, d), ..r }, if color == p.error { color } else { p.text }, DT_END);
+    }
+    y += row + m;
     (buttons, y)
 }
 
@@ -232,7 +264,7 @@ fn paint_button(s: &State, hdc: HDC, a: Action, r: &RECT, primary: bool) {
     unsafe {
         SelectObject(hdc, s.fonts.ui);
     }
-    draw_text(hdc, label(a), r, fg, DT_CENTER_V);
+    draw_text(hdc, &label(a), r, fg, DT_CENTER_V);
     if s.focus == Some(a) {
         let o = scale(3, s.dpi);
         frame(hdc, &RECT { left: r.left - o, top: r.top - o, right: r.right + o, bottom: r.bottom + o }, p.text, 1);
@@ -273,6 +305,13 @@ fn run(hwnd: HWND, a: Action) {
     let result = match a {
         Action::MakeDefault => defaultapp::make_default(),
         Action::RestoreExplorer => defaultapp::restore_explorer(),
+        Action::Update => {
+            match updater::phase() {
+                Phase::Available(r) => updater::install(r),
+                _ => updater::check(),
+            }
+            Ok(())
+        }
         Action::ShowSettingsFile => {
             let file = with_state(|s| s.settings_file.clone()).unwrap_or_default();
             let dir = std::path::Path::new(&file).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
@@ -282,9 +321,12 @@ fn run(hwnd: HWND, a: Action) {
         }
     };
     with_state(|s| {
-        s.error = result.err();
-        s.status = defaultapp::status();
-        if s.focus.is_some_and(|a| !enabled(s, a)) {
+        if a != Action::Update {
+            s.error = result.err();
+            s.status = defaultapp::status();
+        }
+        // The update button is only briefly disabled while busy; keep its focus.
+        if s.focus.is_some_and(|f| f != Action::Update && !enabled(s, f)) {
             s.focus = ACTIONS.into_iter().find(|&a| enabled(s, a));
         }
     });
@@ -393,7 +435,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             } else if vk == VK_TAB {
                 with_state(|s| move_focus(s, shift()));
             } else if vk == VK_RETURN || vk == VK_SPACE {
-                if let Some(a) = with_state(|s| s.focus).flatten() {
+                if let Some(a) = with_state(|s| s.focus.filter(|&a| enabled(s, a))).flatten() {
                     run(hwnd, a);
                 }
             }
@@ -442,6 +484,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         _ => {}
     }
     DefWindowProcW(hwnd, msg, wp, lp)
+}
+
+/// Repaints for a new update phase.
+pub fn update_changed() {
+    if let Some(h) = STATE.with(|s| s.borrow().as_ref().map(|s| s.hwnd)) {
+        invalidate(h);
+    }
 }
 
 /// Opens the settings window over `owner`, or brings an open one to the front.

@@ -69,6 +69,7 @@ file operations.
   program currently opens folders and drives. The registration stores the
   exe path, so re-register after moving `Twig.exe`.
 - About: version, program path and settings folder.
+- Updates: **Check for updates** in Settings → About looks up the latest GitHub release. If it's newer, **Update to X** downloads its `Twig.exe`, replaces the running exe and restarts Twig with the session restored. Needs public releases and write access to Twig's folder.
 
 ### File operations
 

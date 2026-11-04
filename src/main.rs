@@ -18,6 +18,7 @@ mod settingswin;
 mod shell;
 mod shellsel;
 mod theme;
+mod updater;
 mod util;
 mod watch;
 mod win;
@@ -34,6 +35,7 @@ const SHELL_SELECT_GRACE: std::time::Duration = std::time::Duration::from_secs(1
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    updater::wait_from_args(&mut args);
     let from_shell = args.first().is_some_and(|a| a.eq_ignore_ascii_case(defaultapp::SHELL_FLAG));
     if from_shell {
         args.remove(0);
@@ -61,6 +63,7 @@ fn main() {
     }
     std::thread::spawn(zipfs::cleanup_old);
     std::thread::spawn(defaultapp::upgrade_command);
+    std::thread::spawn(updater::cleanup);
 
     let dark = theme::system_prefers_dark();
     theme::init_app_dark_mode(dark);

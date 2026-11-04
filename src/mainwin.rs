@@ -796,6 +796,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             open_pending(hwnd);
             return LRESULT(0);
         }
+        WM_UPDATE => {
+            crate::settingswin::update_changed();
+            return LRESULT(0);
+        }
         WM_ERASEBKGND => return LRESULT(1),
         WM_SIZE => {
             with_app(relayout);
