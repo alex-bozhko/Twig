@@ -744,7 +744,11 @@ fn open_pending(hwnd: HWND) {
     crate::instance::bring_to_front(hwnd);
     let opened = with_app(|app| {
         for p in crate::instance::take_pending() {
-            app.open_external(&p);
+            if p.reveal {
+                app.reveal_external(&p.path);
+            } else {
+                app.open_external(&p.path);
+            }
         }
     });
     if opened.is_none() {

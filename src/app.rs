@@ -361,6 +361,8 @@ pub struct App {
     next_tab: TabId,
     next_pane: PaneId,
     next_watch: u64,
+    /// The tab opened by the last external request, so a follow-up "reveal" can reuse it.
+    external_tab: Option<TabId>,
 }
 
 impl App {
@@ -388,6 +390,7 @@ impl App {
             next_tab: 1,
             next_pane: 1,
             next_watch: 1,
+            external_tab: None,
         });
         let saved = app.settings.layout.clone();
         let mut active = None;
@@ -500,6 +503,22 @@ impl App {
         let (sort, desc) = self.active_sort();
         let tid = self.open_tab(None, sort, desc);
         self.go_to(tid, &path);
+        self.external_tab = Some(tid);
+    }
+
+    /// Selects `text` in the tab the last external request opened on its folder ("Show in
+    /// folder" names the file only after the folder is open); otherwise opens it normally.
+    pub fn reveal_external(&mut self, text: &str) {
+        let path = normalize_path(&expand_env(&clean_path_input(text)));
+        let parent = parent_path(&path).map(|p| path_key(&p));
+        let tid = self.external_tab.filter(|tid| {
+            let root = self.tabs.get(tid).and_then(|t| t.root.as_deref()).map(path_key);
+            root.is_some() && root == parent
+        });
+        match tid {
+            Some(tid) if self.go_to(tid, &path) => {}
+            _ => self.open_external(&path),
+        }
     }
 
     pub fn open_tab(&mut self, root: Option<String>, sort: SortKey, desc: bool) -> TabId {

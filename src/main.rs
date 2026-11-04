@@ -14,6 +14,7 @@ mod scan;
 mod settings;
 mod settingswin;
 mod shell;
+mod shellsel;
 mod theme;
 mod util;
 mod watch;
@@ -25,20 +26,39 @@ use windows::Win32::UI::Controls::{InitCommonControlsEx, ICC_STANDARD_CLASSES, I
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+/// How long a shell launch keeps listening for "Show in folder" to name the file to select. The
+/// folder opens right away; the shell usually calls within a second but can be slower.
+const SHELL_SELECT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn main() {
-    let start_path = instance::path_from_args(std::env::args().skip(1));
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let from_shell = args.first().is_some_and(|a| a.eq_ignore_ascii_case(defaultapp::SHELL_FLAG));
+    if from_shell {
+        args.remove(0);
+    }
+    let start_path = instance::path_from_args(args);
+    // "Show in folder" passes only the folder; the file arrives later through the shell's
+    // window list, where we stand in for an Explorer window.
+    let shell_dir = start_path.clone().filter(|p| from_shell && std::path::Path::new(p).is_dir());
     if !instance::claim() && instance::forward(start_path.as_deref()) {
+        if let Some(dir) = shell_dir {
+            reveal_shell_selection(&dir);
+        }
         return;
+    }
+    if unsafe { OleInitialize(None) }.is_err() {
+        return;
+    }
+    if let Some(dir) = shell_dir {
+        std::thread::spawn(move || reveal_shell_selection(&dir));
     }
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        if OleInitialize(None).is_err() {
-            return;
-        }
         let icc = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES };
         let _ = InitCommonControlsEx(&icc);
     }
     std::thread::spawn(zipfs::cleanup_old);
+    std::thread::spawn(defaultapp::upgrade_command);
 
     let dark = theme::system_prefers_dark();
     theme::init_app_dark_mode(dark);
@@ -72,5 +92,16 @@ fn main() {
         }
     }
     drop(app::uninstall());
+    unsafe { OleUninitialize() };
+}
+
+/// Waits for the shell to name the item to select in `dir` and forwards it to the main window.
+fn reveal_shell_selection(dir: &str) {
+    if unsafe { OleInitialize(None) }.is_err() {
+        return;
+    }
+    if let Some(item) = shellsel::selected_item(dir, SHELL_SELECT_GRACE) {
+        instance::forward_reveal(&item);
+    }
     unsafe { OleUninitialize() };
 }

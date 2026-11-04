@@ -44,9 +44,13 @@ impl Status {
     }
 }
 
+/// First argument of the registered command: marks launches made by the shell, which may be a
+/// "Show in folder" request.
+pub const SHELL_FLAG: &str = "--shell";
+
 /// The command line registered for the verb.
 pub fn command_for(exe: &str) -> String {
-    format!("\"{exe}\" \"%1\"")
+    format!("\"{exe}\" {SHELL_FLAG} \"%1\"")
 }
 
 /// The program path of a registered command line (quoted or bare first token).
@@ -133,6 +137,18 @@ pub fn status() -> Status {
     Status { folders: handler_of(CLASSES[0], &exe), drives: handler_of(CLASSES[1], &exe) }
 }
 
+/// Rewrites this executable's registered commands if an older Twig wrote them in another format.
+pub fn upgrade_command() {
+    let exe = current_exe();
+    let wanted = command_for(&exe);
+    for class in CLASSES {
+        let key = format!("{}\\{VERB}\\command", shell_key(class));
+        if handler_of(class, &exe) == Handler::Twig && read_string(&key).as_deref() != Some(wanted.as_str()) {
+            let _ = write_string(&key, &wanted);
+        }
+    }
+}
+
 fn notify_shell() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
@@ -200,8 +216,9 @@ mod tests {
     #[test]
     fn command_round_trips_exe() {
         let exe = r"C:\Program Files\Twig\Twig.exe";
-        assert_eq!(command_for(exe), r#""C:\Program Files\Twig\Twig.exe" "%1""#);
+        assert_eq!(command_for(exe), r#""C:\Program Files\Twig\Twig.exe" --shell "%1""#);
         assert_eq!(exe_of(&command_for(exe)), Some(exe));
+        assert_eq!(exe_of(r#""C:\Program Files\Twig\Twig.exe" "%1""#), Some(exe));
         assert_eq!(exe_of(r"C:\Tools\Twig.exe %1"), Some(r"C:\Tools\Twig.exe"));
         assert_eq!(exe_of(r#""unterminated"#), None);
         assert_eq!(exe_of("  "), None);

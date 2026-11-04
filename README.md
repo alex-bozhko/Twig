@@ -58,7 +58,8 @@ file operations.
   Windows account only, under `HKCU\Software\Classes`) as the default verb for
   folders and drives, so opening a folder from the desktop, apps or the Run
   dialog opens a Twig tab. Double-clicking a folder in an Explorer window
-  also opens Twig. `Win+E` and Explorer's own windows are unchanged.
+  also opens Twig. "Show in folder" (browsers, IDEs...) opens the folder and
+  selects the file. `Win+E` and Explorer's own windows are unchanged.
   "Restore Explorer" removes the registration. The window shows which
   program currently opens folders and drives. The registration stores the
   exe path, so re-register after moving `Twig.exe`.

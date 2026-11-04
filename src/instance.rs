@@ -8,10 +8,13 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_MOVE, MOUSEINPUT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-/// Tags our WM_COPYDATA payloads ("TWIG").
+/// Tags our WM_COPYDATA payloads: "TWIG" opens a path, "TWIR" reveals a file in the tab just
+/// opened on its folder.
 const MAGIC: usize = 0x5457_4947;
+const MAGIC_REVEAL: usize = 0x5457_4952;
 
 #[cfg(debug_assertions)]
 const MUTEX: &str = "Local\\Twig.SingleInstance.Debug";
@@ -19,7 +22,12 @@ const MUTEX: &str = "Local\\Twig.SingleInstance.Debug";
 const MUTEX: &str = "Local\\Twig.SingleInstance";
 
 thread_local! {
-    static PENDING: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static PENDING: RefCell<Vec<Pending>> = const { RefCell::new(Vec::new()) };
+}
+
+pub struct Pending {
+    pub path: String,
+    pub reveal: bool,
 }
 
 /// The path passed on the command line, if any. Arguments are rejoined so an unquoted path with
@@ -45,6 +53,15 @@ pub fn claim() -> bool {
 /// Sends `path` (or just an activation request) to the running instance. Returns false if no
 /// window answered, in which case the caller should start normally.
 pub fn forward(path: Option<&str>) -> bool {
+    send(path, MAGIC)
+}
+
+/// Asks the running instance to select `path` in the tab it opened for the file's folder.
+pub fn forward_reveal(path: &str) -> bool {
+    send(Some(path), MAGIC_REVEAL)
+}
+
+fn send(path: Option<&str>, magic: usize) -> bool {
     let target = (0..50).find_map(|i| {
         if i > 0 {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -53,7 +70,7 @@ pub fn forward(path: Option<&str>) -> bool {
     });
     let Some(hwnd) = target else { return false };
     let text: Vec<u16> = path.unwrap_or("").encode_utf16().collect();
-    let cds = COPYDATASTRUCT { dwData: MAGIC, cbData: (text.len() * 2) as u32, lpData: text.as_ptr() as *mut c_void };
+    let cds = COPYDATASTRUCT { dwData: magic, cbData: (text.len() * 2) as u32, lpData: text.as_ptr() as *mut c_void };
     unsafe {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
@@ -75,19 +92,20 @@ pub fn allow_copydata(hwnd: HWND) {
 /// Returns false for payloads that aren't ours.
 pub fn receive(hwnd: HWND, lp: LPARAM) -> bool {
     let cds = unsafe { &*(lp.0 as *const COPYDATASTRUCT) };
-    if cds.dwData != MAGIC {
+    let reveal = cds.dwData == MAGIC_REVEAL;
+    if cds.dwData != MAGIC && !reveal {
         return false;
     }
     if cds.cbData >= 2 && !cds.lpData.is_null() {
         let units = unsafe { std::slice::from_raw_parts(cds.lpData as *const u16, cds.cbData as usize / 2) };
         let path = String::from_utf16_lossy(units);
-        PENDING.with(|p| p.borrow_mut().push(path));
+        PENDING.with(|p| p.borrow_mut().push(Pending { path, reveal }));
     }
     crate::win::post(hwnd, crate::win::WM_OPEN_PATH, 0, 0);
     true
 }
 
-pub fn take_pending() -> Vec<String> {
+pub fn take_pending() -> Vec<Pending> {
     PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()))
 }
 
@@ -96,6 +114,13 @@ pub fn bring_to_front(hwnd: HWND) {
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
+        if SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd {
+            return;
+        }
+        // Windows refuses foreground changes from a process that hasn't had recent input; a
+        // zero-length synthetic mouse move counts as input and lifts the lock.
+        let input = INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: MOUSEEVENTF_MOVE, ..Default::default() } } };
+        SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
         let _ = SetForegroundWindow(hwnd);
     }
 }
