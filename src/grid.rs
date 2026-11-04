@@ -1069,8 +1069,6 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         };
         if bg != pal.bg {
             fill(hdc, &row, bg);
-        } else if pinned {
-            wash(hdc, &row, pal.accent, 24);
         }
         if pinned {
             fill(hdc, &rc(0, y, scale(3, app.dpi), m.row), pal.accent);

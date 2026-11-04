@@ -202,6 +202,27 @@ pub fn draw_text(hdc: HDC, s: &str, r: &RECT, color: COLORREF, flags: DRAW_TEXT_
     }
 }
 
+/// Draws a single icon-font glyph centered on its ink, not its em box (icon fonts sit off-center in it).
+pub fn draw_glyph(hdc: HDC, glyph: &str, r: &RECT, color: COLORREF) {
+    let w: Vec<u16> = glyph.encode_utf16().collect();
+    let Some(&ch) = w.first() else { return };
+    let one = FIXED { fract: 0, value: 1 };
+    let mat = MAT2 { eM11: one, eM12: FIXED::default(), eM21: FIXED::default(), eM22: one };
+    let mut gm = GLYPHMETRICS::default();
+    let mut tm = TEXTMETRICW::default();
+    unsafe {
+        if GetGlyphOutlineW(hdc, ch as u32, GGO_METRICS, &mut gm, 0, None, &mat) == u32::MAX || !GetTextMetricsW(hdc, &mut tm).as_bool() {
+            draw_text(hdc, glyph, r, color, DT_CENTER_V);
+            return;
+        }
+        let x = r.left + (r.right - r.left - gm.gmBlackBoxX as i32) / 2 - gm.gmptGlyphOrigin.x;
+        let y = r.top + (r.bottom - r.top - gm.gmBlackBoxY as i32) / 2 - tm.tmAscent + gm.gmptGlyphOrigin.y;
+        SetTextColor(hdc, color);
+        SetBkMode(hdc, TRANSPARENT);
+        let _ = TextOutW(hdc, x, y, &w);
+    }
+}
+
 pub const DT_LEFT_V: DRAW_TEXT_FORMAT = DRAW_TEXT_FORMAT(DT_LEFT.0 | DT_VCENTER.0 | DT_END_ELLIPSIS.0);
 pub const DT_RIGHT_V: DRAW_TEXT_FORMAT = DRAW_TEXT_FORMAT(DT_RIGHT.0 | DT_VCENTER.0 | DT_END_ELLIPSIS.0);
 pub const DT_CENTER_V: DRAW_TEXT_FORMAT = DRAW_TEXT_FORMAT(DT_CENTER.0 | DT_VCENTER.0);

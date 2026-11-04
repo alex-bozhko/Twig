@@ -77,6 +77,8 @@ pub struct Fonts {
     pub glyph_small: HFONT,
     /// Breadcrumb chevrons and PC icon.
     pub glyph_mid: HFONT,
+    /// Tab close/new glyphs, grayscale-smoothed so thin diagonals don't get ClearType color fringes.
+    pub glyph_tab: HFONT,
     pub ui_height: i32,
 }
 
@@ -98,11 +100,12 @@ impl Fonts {
                 ncm.lfMessageFont.lfFaceName[..face.len()].copy_from_slice(&face);
             }
             let ui = CreateFontIndirectW(&ncm.lfMessageFont);
-            let glyph = glyph_font(scale(16, dpi));
-            let glyph_small = glyph_font(scale(10, dpi));
-            let glyph_mid = glyph_font(scale(12, dpi));
+            let glyph = glyph_font(scale(16, dpi), CLEARTYPE_QUALITY);
+            let glyph_small = glyph_font(scale(10, dpi), CLEARTYPE_QUALITY);
+            let glyph_mid = glyph_font(scale(12, dpi), CLEARTYPE_QUALITY);
+            let glyph_tab = glyph_font(scale(10, dpi), ANTIALIASED_QUALITY);
             let ui_height = crate::win::font_height(ui);
-            Fonts { ui, glyph, glyph_small, glyph_mid, ui_height }
+            Fonts { ui, glyph, glyph_small, glyph_mid, glyph_tab, ui_height }
         }
     }
 }
@@ -114,13 +117,14 @@ impl Drop for Fonts {
             let _ = DeleteObject(self.glyph);
             let _ = DeleteObject(self.glyph_small);
             let _ = DeleteObject(self.glyph_mid);
+            let _ = DeleteObject(self.glyph_tab);
         }
     }
 }
 
-fn glyph_font(px: i32) -> HFONT {
+fn glyph_font(px: i32, quality: FONT_QUALITY) -> HFONT {
     for face in ["Segoe Fluent Icons", "Segoe MDL2 Assets"] {
-        let mut lf = LOGFONTW { lfHeight: -px, lfCharSet: DEFAULT_CHARSET, lfQuality: CLEARTYPE_QUALITY, ..Default::default() };
+        let mut lf = LOGFONTW { lfHeight: -px, lfCharSet: DEFAULT_CHARSET, lfQuality: quality, ..Default::default() };
         let w = wide(face);
         lf.lfFaceName[..w.len()].copy_from_slice(&w);
         unsafe {

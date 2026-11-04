@@ -192,7 +192,9 @@ fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[TabLabel])
     for w in widths {
         let rect = RECT { left: x, top, right: x + w, bottom };
         let cx = rect.right - scale(6, d) - close;
-        let cy = top + (h - close) / 2;
+        // Centered under the active tab's accent bar, where the title visually sits.
+        let bar = scale(3, d);
+        let cy = top + bar + (h - bar - close) / 2;
         tabs.push(TabRect { rect, close: rc(cx, cy, close, close) });
         x += w + gap;
     }
@@ -329,18 +331,18 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
                     fill(hdc, &tr.close, pal.hover);
                 }
                 unsafe {
-                    SelectObject(hdc, app.fonts.glyph_small);
+                    SelectObject(hdc, app.fonts.glyph_tab);
                 }
-                draw_text(hdc, glyph::CLOSE, &tr.close, pal.text_dim, DT_CENTER_V);
+                draw_glyph(hdc, glyph::CLOSE, &tr.close, pal.text_dim);
             }
         }
         if c.hot == Some(Hot::Plus(pc.pane)) {
             fill(hdc, &pc.plus, pal.hover);
         }
         unsafe {
-            SelectObject(hdc, app.fonts.glyph_small);
+            SelectObject(hdc, app.fonts.glyph_tab);
         }
-        draw_text(hdc, glyph::ADD, &pc.plus, pal.text, DT_CENTER_V);
+        draw_glyph(hdc, glyph::ADD, &pc.plus, pal.text);
         if let Some(DropSpot::Strip(tp, idx)) = drag_target {
             if tp == pc.pane {
                 let x = match pc.tabs.get(idx) {
