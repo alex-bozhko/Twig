@@ -43,6 +43,7 @@ enum Hot {
     Plus(PaneId),
     Splitter(usize),
     Strip(PaneId),
+    Gear,
 }
 
 struct TabRect {
@@ -79,6 +80,8 @@ pub struct Chrome {
     /// Tab under an OLE drag (activated after a delay).
     pub drag_hover: Option<(PaneId, usize)>,
     status: RECT,
+    /// Settings button at the right end of the status bar.
+    gear: RECT,
     panes: Vec<PaneChrome>,
     splitters: Vec<Splitter>,
     hot: Option<Hot>,
@@ -112,6 +115,7 @@ pub fn relayout(app: &mut App) {
 
     let c = &mut app.chrome;
     c.status = rc(0, h - sb, w, sb);
+    c.gear = rc(w - scale(32, d), h - sb + 1, scale(32, d), sb - 1);
 
     let area = Rect::new(0, 0, w, h - sb);
     let mut rects = Vec::new();
@@ -201,6 +205,9 @@ pub fn tab_at(app: &App, x: i32, y: i32) -> Option<(PaneId, usize)> {
 fn hit(c: &Chrome, x: i32, y: i32) -> Option<Hot> {
     if let Some(i) = c.splitters.iter().position(|s| s.rect.contains(x, y)) {
         return Some(Hot::Splitter(i));
+    }
+    if pt_in(&c.gear, x, y) {
+        return Some(Hot::Gear);
     }
     for pc in &c.panes {
         if !pt_in(&pc.strip, x, y) {
@@ -355,6 +362,17 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
         None => (&app.status, if app.status_error { pal.error } else { pal.text_dim }),
     };
     let mut sr = sr;
+    if c.hot == Some(Hot::Gear) {
+        fill(hdc, &c.gear, if c.pressed == Some(Hot::Gear) { pal.sel_inactive } else { pal.hover });
+    }
+    unsafe {
+        SelectObject(hdc, app.fonts.glyph_mid);
+    }
+    draw_text(hdc, glyph::GEAR, &c.gear, if c.hot == Some(Hot::Gear) { pal.text } else { pal.text_dim }, DT_CENTER_V);
+    unsafe {
+        SelectObject(hdc, app.fonts.ui);
+    }
+    sr.right = c.gear.left - scale(4, d);
     if !c.summary.is_empty() {
         draw_text(hdc, &c.summary, &sr, pal.text_dim, DT_RIGHT_V);
         sr.right -= text_width(hdc, app.fonts.ui, &c.summary) + scale(24, d);
@@ -473,7 +491,7 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
     with_app(|app| {
         let h = hit(&app.chrome, x, y);
         match h {
-            Some(Hot::TabClose(..)) | Some(Hot::Plus(_)) => {
+            Some(Hot::TabClose(..)) | Some(Hot::Plus(_)) | Some(Hot::Gear) => {
                 app.chrome.pressed = h;
                 unsafe {
                     SetCapture(hwnd);
@@ -559,7 +577,7 @@ fn on_mouse_move(hwnd: HWND, x: i32, y: i32) {
 }
 
 fn on_button_up(hwnd: HWND, x: i32, y: i32) {
-    with_app(|app| {
+    let settings = with_app(|app| {
         let pressed = app.chrome.pressed.take();
         let tab_drag = app.chrome.tab_drag.take();
         let split = app.chrome.split_drag.take();
@@ -569,7 +587,7 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
         show_overlay(app, None);
         invalidate(hwnd);
         if split.is_some() {
-            return;
+            return false;
         }
         if let Some(td) = tab_drag {
             match td.spot.filter(|_| td.active) {
@@ -578,9 +596,9 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
                 Some(DropSpot::Dock(p, Some(side))) => app.split_with_tab(td.tab, p, side),
                 None => {}
             }
-            return;
+            return false;
         }
-        let Some(pressed) = pressed.filter(|p| hit(&app.chrome, x, y) == Some(*p)) else { return };
+        let Some(pressed) = pressed.filter(|p| hit(&app.chrome, x, y) == Some(*p)) else { return false };
         match pressed {
             Hot::TabClose(p, i) => {
                 if let Some(t) = app.panes.get(&p).and_then(|pp| pp.tabs.get(i).copied()) {
@@ -591,9 +609,20 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
                 app.activate_pane(p);
                 app.open_tab(None, SortKey::Name, false);
             }
+            Hot::Gear => return true,
             _ => {}
         }
+        false
     });
+    if settings == Some(true) {
+        open_settings(hwnd);
+    }
+}
+
+/// Opens (or focuses) the settings window.
+fn open_settings(hwnd: HWND) {
+    let dark = with_app(|app| app.dark).unwrap_or(false);
+    crate::settingswin::show(hwnd, dark);
 }
 
 fn on_middle_up(x: i32, y: i32) {
@@ -1066,6 +1095,11 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
                     None => app.set_status_error("Can't create a folder here".into()),
                 }
             });
+            true
+        }
+        0xBC if !sh => {
+            // Ctrl+, (VK_OEM_COMMA): settings
+            open_settings(main);
             true
         }
         _ => false,

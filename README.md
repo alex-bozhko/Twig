@@ -51,6 +51,19 @@ file operations.
 - Single instance: launching Twig again forwards the path to the running
   window as a new tab and brings it to the front.
 
+### Settings
+
+- Open with the gear at the right of the status bar or `Ctrl+,`.
+- **Default file manager**: "Make Twig the default" registers Twig (for your
+  Windows account only, under `HKCU\Software\Classes`) as the default verb for
+  folders and drives, so opening a folder from the desktop, apps or the Run
+  dialog opens a Twig tab. Double-clicking a folder in an Explorer window
+  also opens Twig. `Win+E` and Explorer's own windows are unchanged.
+  "Restore Explorer" removes the registration. The window shows which
+  program currently opens folders and drives. The registration stores the
+  exe path, so re-register after moving `Twig.exe`.
+- About: version, program path and settings folder.
+
 ### File operations
 
 - Drag and drop with Windows semantics (`Ctrl` copy, `Shift` move).

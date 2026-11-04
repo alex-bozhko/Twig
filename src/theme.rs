@@ -155,6 +155,10 @@ pub mod glyph {
     pub const ZOOM: &str = "\u{E838}";
     pub const CHECKBOX: &str = "\u{E739}";
     pub const CHECKBOX_CHECKED: &str = "\u{E73A}";
+    pub const GEAR: &str = "\u{E713}";
+    pub const CHECK: &str = "\u{E73E}";
+    pub const WARNING: &str = "\u{E7BA}";
+    pub const INFO: &str = "\u{E946}";
 }
 
 /// Reads the "apps use light theme" preference.

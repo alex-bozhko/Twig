@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod defaultapp;
 mod dragdrop;
 mod fileops;
 mod grid;
@@ -11,6 +12,7 @@ mod mainwin;
 mod model;
 mod scan;
 mod settings;
+mod settingswin;
 mod shell;
 mod theme;
 mod util;
