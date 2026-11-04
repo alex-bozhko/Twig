@@ -112,6 +112,15 @@ file operations.
 - Opening, copying or dragging out an entry extracts just that entry to a
   unique folder under `%TEMP%\Twig\` (cleaned up on start).
 
+### Network shares
+
+- UNC paths work anywhere a path does: `\\server\share\folder`, or just
+  `\\server` to list its disk shares (hidden `$` shares are skipped).
+- Going up from a share root shows the server with that share selected; up
+  from a server goes to This PC.
+- A server that doesn't answer within 5 seconds reports "Not found" and is
+  skipped for 30 seconds, so a dead server can't stall the UI.
+
 ### Favorites
 
 - Right-click a folder → **Add to favorites** / **Remove from favorites**

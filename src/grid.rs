@@ -1820,11 +1820,15 @@ fn on_dblclick(app: &mut App, pane: PaneId, x: i32, y: i32) -> Option<Deferred> 
     None
 }
 
-/// Re-roots the tab at its root's parent (drive roots go to This PC), keeping the old root expanded.
+/// Re-roots the tab at its root's parent (drive roots and servers go to This PC, share roots to
+/// their server), keeping the old root expanded.
 fn go_up(app: &mut App, tid: TabId) {
     let Some(path) = app.tabs.get(&tid).and_then(|t| t.root.clone()) else { return };
-    if is_drive_root(&path) {
+    if is_drive_root(&path) || crate::util::is_server_path(&path) {
         app.navigate(tid, None, false);
+    } else if crate::util::is_share_root(&path) {
+        let server = crate::util::parent_path(&path);
+        app.navigate_up(tid, server.as_deref());
     } else {
         app.navigate(tid, Some(&path), false);
     }

@@ -46,7 +46,11 @@ pub struct Watcher {
 
 impl Watcher {
     pub fn start(id: u64, root: &str) -> Option<Watcher> {
-        let w = wide(root);
+        if crate::util::is_server_path(root) {
+            return None;
+        }
+        // A share root (`\\srv\share`) only opens with a trailing backslash.
+        let w = wide(&if crate::util::is_share_root(root) { format!("{root}\\") } else { root.to_string() });
         let dir = unsafe {
             CreateFileW(
                 PCWSTR(w.as_ptr()),

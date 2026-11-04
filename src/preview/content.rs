@@ -372,7 +372,11 @@ fn folder_info(t: &Target) -> Payload {
 }
 
 fn drive_info(t: &Target) -> Payload {
-    let w = crate::util::wide(&t.path);
+    if crate::util::is_server_path(&t.path) {
+        return Payload::Info { thumb: thumbnail(t), extra: Vec::new(), note: None };
+    }
+    // UNC share roots need a trailing backslash.
+    let w = crate::util::wide(&format!("{}\\", t.path.trim_end_matches('\\')));
     let (mut free, mut total) = (0u64, 0u64);
     let ok = unsafe { GetDiskFreeSpaceExW(PCWSTR(w.as_ptr()), Some(&mut free), Some(&mut total), None) }.is_ok();
     let extra = if ok {

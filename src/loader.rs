@@ -250,6 +250,9 @@ fn err_text(e: &windows::core::Error) -> String {
 
 /// Lists one directory. Hidden+system items are skipped, like Explorer's default view.
 pub fn list_dir(path: &str) -> Result<Vec<Entry>, String> {
+    if crate::util::is_server_path(path) {
+        return list_shares(&crate::util::normalize_path(path));
+    }
     let pattern = wide(&join_path(path, "*"));
     let mut fd = WIN32_FIND_DATAW::default();
     let h = unsafe {
@@ -380,8 +383,114 @@ fn this_pc(favorites: &[String]) -> Vec<Entry> {
     out
 }
 
-/// Builds a standalone entry for a tab root (drive root, folder or zip). None if it doesn't exist.
+/// Builds a standalone entry for a tab root (drive root, folder, zip, network share or server).
+/// None if it doesn't exist. UNC probes are time-limited so an unreachable server can't freeze the UI.
 pub fn entry_for_path(path: &str) -> Option<Entry> {
+    if crate::util::is_unc(path) {
+        let p = crate::util::normalize_path(path);
+        let probe = p.clone();
+        return unc_gate(&p, move || entry_now(&probe));
+    }
+    entry_now(path)
+}
+
+/// How long a UNC probe may block the caller, and how long an unresponsive server is skipped.
+const UNC_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const UNC_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs a probe of a UNC path on a helper thread, giving up after `UNC_PROBE_TIMEOUT`.
+/// A server that timed out fails fast for `UNC_RETRY_AFTER` (callers probe several times per navigation).
+fn unc_gate<T: Send + 'static>(path: &str, probe: impl FnOnce() -> Option<T> + Send + 'static) -> Option<T> {
+    use std::time::Instant;
+    static SLOW: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let slow = SLOW.get_or_init(|| Mutex::new(HashMap::new()));
+    let server = path.trim_start_matches('\\').split('\\').next().unwrap_or("").to_lowercase();
+    if slow.lock().unwrap().get(&server).is_some_and(|t| t.elapsed() < UNC_RETRY_AFTER) {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("unc-probe".into()).spawn(move || {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        }
+        let _ = tx.send(probe());
+    });
+    if spawned.is_err() {
+        return None;
+    }
+    match rx.recv_timeout(UNC_PROBE_TIMEOUT) {
+        Ok(r) => {
+            slow.lock().unwrap().remove(&server);
+            r
+        }
+        Err(_) => {
+            slow.lock().unwrap().insert(server, Instant::now());
+            None
+        }
+    }
+}
+
+/// Lists the disk shares of `\\server` as drive-like entries; hidden `$` shares are skipped, like Explorer.
+fn list_shares(server: &str) -> Result<Vec<Entry>, String> {
+    use windows::Win32::NetworkManagement::NetManagement::{NetApiBufferFree, MAX_PREFERRED_LENGTH};
+    let name = wide(server);
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    let (mut read, mut total) = (0u32, 0u32);
+    let rc = unsafe { NetShareEnum(PCWSTR(name.as_ptr()), 1, &mut buf, MAX_PREFERRED_LENGTH, &mut read, &mut total, None) };
+    let mut names = Vec::new();
+    if !buf.is_null() {
+        let items = unsafe { std::slice::from_raw_parts(buf as *const SHARE_INFO_1, read as usize) };
+        for it in items {
+            let t = it.shi1_type.0;
+            let share = unsafe { it.shi1_netname.to_string() }.unwrap_or_default();
+            if t & 0xFF == STYPE_DISKTREE.0 && t & STYPE_SPECIAL.0 == 0 && !share.is_empty() && !share.ends_with('$') {
+                names.push(share);
+            }
+        }
+        unsafe {
+            NetApiBufferFree(Some(buf as *const _));
+        }
+    }
+    if rc != 0 && rc != ERROR_MORE_DATA.0 {
+        return Err(err_text(&windows::core::Error::from(WIN32_ERROR(rc).to_hresult())));
+    }
+    Ok(names.iter().map(|n| network_entry(&join_path(server, n), n)).collect())
+}
+
+/// A `\\server` or `\\server\share` entry: drive-like (no rename/delete, no modified time).
+fn network_entry(path: &str, name: &str) -> Entry {
+    let server = crate::util::is_server_path(path);
+    let fi = shfi(path, FILE_FLAGS_AND_ATTRIBUTES(0), SHGFI_SYSICONINDEX | SHGFI_TYPENAME);
+    let icon = fi.as_ref().map_or(-1, |fi| fi.iIcon);
+    let type_name = fi.map(|fi| crate::util::from_wide(&fi.szTypeName)).filter(|t| !t.is_empty());
+    let type_name = type_name.unwrap_or_else(|| if server { "Network computer" } else { "Network share" }.to_string());
+    Entry {
+        name: name.to_string(),
+        path: path.to_string(),
+        kind: Kind::Drive,
+        attrs: 0,
+        size: 0,
+        modified: 0,
+        type_name: Arc::from(type_name),
+        icon,
+        icon_final: true,
+        has_children: None,
+    }
+}
+
+fn entry_now(path: &str) -> Option<Entry> {
+    let p = crate::util::normalize_path(path);
+    if crate::util::is_server_path(&p) {
+        list_shares(&p).ok()?;
+        return Some(network_entry(&p, &crate::util::file_name(&p)));
+    }
+    if crate::util::is_share_root(&p) {
+        let w = wide(&format!("{p}\\"));
+        if unsafe { GetFileAttributesW(PCWSTR(w.as_ptr())) } == INVALID_FILE_ATTRIBUTES {
+            return None;
+        }
+        return Some(network_entry(&p, &crate::util::file_name(&p)));
+    }
     if crate::util::is_drive_root(path) {
         let root = format!("{}\\", path.trim_end_matches(['\\', '/']));
         let w = wide(&root);

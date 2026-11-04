@@ -869,7 +869,8 @@ impl App {
             t.pending_select = vec![key];
         } else {
             let mut chain = vec![target.clone()];
-            while let Some(p) = parent_path(chain.last().unwrap()) {
+            // Like a drive root, a network share's root is the top for "open in tab" (not its server).
+            while let Some(p) = parent_path(chain.last().unwrap()).filter(|_| !crate::util::is_share_root(chain.last().unwrap())) {
                 chain.push(p);
             }
             let top = chain.last().unwrap().clone();
@@ -1760,6 +1761,7 @@ impl App {
         let id = id.or(t.focus).or(t.root_node())?;
         let n = t.tree.get(id)?;
         match n.kind {
+            Kind::Drive if crate::util::is_server_path(&n.path) => None,
             Kind::Drive | Kind::Dir => Some(n.path.clone()),
             Kind::File | Kind::Zip => parent_path(&n.path),
             Kind::ZipDir | Kind::ZipFile => None,

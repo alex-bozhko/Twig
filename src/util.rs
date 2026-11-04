@@ -119,25 +119,43 @@ pub fn clean_path_input(text: &str) -> String {
     text.trim().trim_matches('"').trim().to_string()
 }
 
-/// Parent directory of a path, `None` for drive roots / UNC share roots.
+/// Parent directory of a path: `\\server\share` goes up to `\\server`; `None` for drive roots and servers.
 pub fn parent_path(path: &str) -> Option<String> {
     let p = normalize_path(path);
-    if is_drive_root(&p) {
+    if is_drive_root(&p) || is_server_path(&p) {
         return None;
     }
     let idx = p.rfind('\\')?;
     let parent = &p[..idx];
-    if parent.is_empty() {
+    if parent.is_empty() || parent.starts_with("\\\\") && !is_unc(parent) {
         return None;
     }
-    if parent.starts_with("\\\\") {
-        // UNC: \\server\share is the minimum.
-        let parts = parent.trim_start_matches('\\').split('\\').count();
-        if parts < 2 {
-            return None;
-        }
-    }
     Some(normalize_path(parent))
+}
+
+/// Number of components after the leading `\\` of a UNC path (`None` for non-UNC paths).
+fn unc_depth(path: &str) -> Option<usize> {
+    let p = normalize_path(path);
+    let rest = p.strip_prefix("\\\\")?;
+    if rest.is_empty() || rest.starts_with('?') || rest.starts_with('.') && rest[1..].starts_with('\\') {
+        return None;
+    }
+    Some(rest.split('\\').count())
+}
+
+/// `\\server`: a network host whose shares are listed like drives.
+pub fn is_server_path(path: &str) -> bool {
+    unc_depth(path) == Some(1)
+}
+
+/// `\\server\share`: the root of a network share.
+pub fn is_share_root(path: &str) -> bool {
+    unc_depth(path) == Some(2)
+}
+
+/// Any UNC path (`\\server...`), which may block for a long time if the server is unreachable.
+pub fn is_unc(path: &str) -> bool {
+    unc_depth(path).is_some()
 }
 
 pub fn is_drive_root(path: &str) -> bool {
@@ -346,7 +364,7 @@ mod tests {
         let s = |v: Vec<(String, String)>| v.into_iter().map(|(l, p)| format!("{l}={p}")).collect::<Vec<_>>();
         assert_eq!(s(crumbs("C:\\")), ["C:=C:\\"]);
         assert_eq!(s(crumbs("C:\\Users\\bob\\")), ["C:=C:\\", "Users=C:\\Users", "bob=C:\\Users\\bob"]);
-        assert_eq!(s(crumbs("\\\\srv\\share\\x")), ["\\\\srv\\share=\\\\srv\\share", "x=\\\\srv\\share\\x"]);
+        assert_eq!(s(crumbs("\\\\srv\\share\\x")), ["\\\\srv=\\\\srv", "share=\\\\srv\\share", "x=\\\\srv\\share\\x"]);
     }
 
     #[test]
@@ -357,7 +375,11 @@ mod tests {
         assert_eq!(parent_path("C:\\a"), Some("C:\\".into()));
         assert_eq!(parent_path("C:\\"), None);
         assert_eq!(parent_path("\\\\srv\\share\\x"), Some("\\\\srv\\share".into()));
-        assert_eq!(parent_path("\\\\srv\\share"), None);
+        assert_eq!(parent_path("\\\\srv\\share"), Some("\\\\srv".into()));
+        assert_eq!(parent_path("\\\\srv\\"), None);
+        assert_eq!(parent_path("\\\\?\\C:"), None);
+        assert!(is_server_path("\\\\srv\\") && !is_server_path("\\\\srv\\share") && !is_server_path("C:\\"));
+        assert!(is_share_root("\\\\srv\\share") && !is_share_root("\\\\srv\\share\\x") && !is_share_root("\\\\?\\C:"));
         assert_eq!(file_name("C:\\a\\b.txt"), "b.txt");
         assert_eq!(file_name("D:\\"), "D:\\");
         assert_eq!(join_path("C:\\", "x"), "C:\\x");

@@ -71,6 +71,7 @@ fn target(app: &mut App, pane: PaneId, x: i32, y: i32) -> Option<(TabId, Option<
     };
     let n = t.tree.get(id)?;
     match n.kind {
+        Kind::Drive if crate::util::is_server_path(&n.path) => None,
         Kind::Drive | Kind::Dir => Some((tid, Some(id), n.path.clone())),
         Kind::File | Kind::Zip => {
             let parent = parent_path(&n.path)?;
