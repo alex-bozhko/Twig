@@ -1,6 +1,6 @@
 [package]
 name = "twig"
-version = "2.1.1"
+version = "2.1.2"
 edition = "2021"
 description = "Twig - a fast tree-style file browser for Windows"
 build = "build.rs"
