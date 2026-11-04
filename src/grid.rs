@@ -2508,10 +2508,10 @@ fn place_rename(app: &mut App) {
         Some((x, y, (right - x).max(scale(80, app.dpi))))
     });
     // A single-line EDIT draws text at the top of its client area, so size it
-    // to the font and centre the box in the row instead. The EDIT only insets
-    // its text by 2px top/bottom when the client is at least line height + 4px
-    // (otherwise the text overdraws the top border), hence 1px border + 2px each side.
-    let h = (app.fonts.ui_height + 6).min(m.row);
+    // to the font and centre the box in the row instead. The EDIT insets its
+    // text 1px from the top only when the client is taller than the line
+    // (otherwise the text overdraws the top border): 1px border + 1px gap each side.
+    let h = (app.fonts.ui_height + 4).min(m.row);
     unsafe {
         match place {
             Some((x, y, w)) => {
