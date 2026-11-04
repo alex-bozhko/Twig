@@ -64,10 +64,10 @@ file operations.
 
 ### Favorites
 
-- ★ menu: add the current folder, open in current or new tab, right-click to
-  remove.
+- Right-click a folder → **Add to favorites** / **Remove from favorites**
+  (its own section in the menu). The tab's sort is remembered.
 - **This PC** lists favorites below the drives, under a ★ Favorites header.
-  They expand in place. Right-click one to remove it. They can't be renamed, deleted, cut
+  They expand in place. They can't be renamed, deleted, cut
   or dragged away from there.
 
 ### Filter (experimental)

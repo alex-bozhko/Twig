@@ -1634,25 +1634,17 @@ impl App {
 
     // ---------- Favorites ----------
 
-    pub fn add_favorite(&mut self) {
-        let Some(tid) = self.active_tab() else { return };
-        let t = &self.tabs[&tid];
-        let Some(root) = t.root.clone() else {
-            self.set_status("This PC can't be a favorite".into());
+    /// Adds `path` as a favorite, remembering `tid`'s sort for when it is opened.
+    pub fn add_favorite(&mut self, tid: TabId, path: String) {
+        if self.favorite_index(&path).is_some() {
             return;
-        };
-        let (sort, desc) = (t.tree.sort, t.tree.desc);
-        let name = file_name(&root);
-        if let Some(f) = self.settings.favorites.iter_mut().find(|f| path_key(&f.path) == path_key(&root)) {
-            f.sort = sort;
-            f.desc = desc;
-            self.set_status(format!("Updated sort for favorite: {name}"));
-        } else {
-            self.settings.favorites.push(Favorite { path: root, sort, desc });
-            self.set_status(format!("Added favorite: {name}"));
-            self.refresh_drives();
         }
+        let Some(t) = self.tabs.get(&tid) else { return };
+        let (sort, desc) = (t.tree.sort, t.tree.desc);
+        self.set_status(format!("Added favorite: {}", file_name(&path)));
+        self.settings.favorites.push(Favorite { path, sort, desc });
         self.save_settings();
+        self.refresh_drives();
     }
 
     pub fn remove_favorite(&mut self, i: usize) {
@@ -1667,23 +1659,6 @@ impl App {
     /// Index of the favorite for `path`, if any.
     pub fn favorite_index(&self, path: &str) -> Option<usize> {
         self.settings.favorites.iter().position(|f| path_key(&f.path) == path_key(path))
-    }
-
-    pub fn open_favorite(&mut self, i: usize, new_tab: bool) {
-        let Some(f) = self.settings.favorites.get(i).cloned() else { return };
-        if loader::entry_for_path(&f.path).is_none() {
-            self.set_status_error(format!("Folder not found: {}", f.path));
-            return;
-        }
-        if new_tab {
-            self.open_tab(Some(f.path), f.sort, f.desc);
-        } else if let Some(tid) = self.active_tab() {
-            if let Some(t) = self.tabs.get_mut(&tid) {
-                t.tree.sort = f.sort;
-                t.tree.desc = f.desc;
-            }
-            self.navigate(tid, Some(&f.path), true);
-        }
     }
 
     // ---------- Sorting ----------

@@ -1,4 +1,4 @@
-//! The main window: toolbar (navigation buttons, favorites, path box), per-pane tab strips,
+//! The main window: toolbar (filter box), per-pane tab strips,
 //! splitters, tab drag & dock, status bar and top-level message handling.
 
 use crate::app::{with_app, App, TIMER_HOVER_TAB, TIMER_STATUS, TIMER_WATCH};
@@ -42,8 +42,6 @@ pub fn tabs_stale(app: &App, pane: PaneId) -> bool {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Btn {
-    Refresh,
-    Favorites,
     ClearFilter,
     /// Subfolder-search toggle inside the filter box.
     Deep,
@@ -107,7 +105,6 @@ pub struct Chrome {
     deep_rect: RECT,
     /// The subfolder toggle has room for its text label.
     deep_label: bool,
-    buttons: Vec<(Btn, RECT)>,
     panes: Vec<PaneChrome>,
     splitters: Vec<Splitter>,
     hot: Option<Hot>,
@@ -140,22 +137,13 @@ pub fn relayout(app: &mut App) {
     let tb = scale(TOOLBAR, d);
     let sb = scale(STATUS, d);
     let pad = scale(6, d);
-    let bw = scale(34, d);
     let bh = scale(32, d);
     let by = (tb - bh) / 2;
 
     let c = &mut app.chrome;
     c.toolbar = rc(0, 0, w, tb);
     c.status = rc(0, h - sb, w, sb);
-    c.buttons.clear();
-    let mut x = pad;
-    for b in [Btn::Refresh, Btn::Favorites] {
-        c.buttons.push((b, rc(x, by, bw, bh)));
-        x += bw + scale(2, d);
-    }
-    x += scale(6, d);
-    let search_w = (w - pad - x).max(0);
-    c.search_rect = rc(x, by, search_w, bh);
+    c.search_rect = rc(pad, by, (w - 2 * pad).max(0), bh);
     layout_search(app);
 
     let area = Rect::new(0, tb, w, h - tb - sb);
@@ -284,9 +272,6 @@ fn hit(c: &Chrome, x: i32, y: i32) -> Option<Hot> {
     if c.deep_rect.right > c.deep_rect.left && pt_in(&c.deep_rect, x, y) {
         return Some(Hot::Button(Btn::Deep));
     }
-    if let Some((b, _)) = c.buttons.iter().find(|(_, r)| pt_in(r, x, y)) {
-        return Some(Hot::Button(*b));
-    }
     if let Some(i) = c.splitters.iter().position(|s| s.rect.contains(x, y)) {
         return Some(Hot::Splitter(i));
     }
@@ -357,23 +342,6 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
 
     // Toolbar
     fill(hdc, &c.toolbar, pal.toolbar);
-    for &(b, r) in &c.buttons {
-        let hot = c.hot == Some(Hot::Button(b));
-        let pressed = hot && c.pressed == Some(Hot::Button(b));
-        if pressed {
-            fill(hdc, &r, pal.sel);
-        } else if hot {
-            fill(hdc, &r, pal.hover);
-        }
-        let g = match b {
-            Btn::Refresh => glyph::REFRESH,
-            _ => glyph::STAR,
-        };
-        unsafe {
-            SelectObject(hdc, app.fonts.glyph);
-        }
-        draw_text(hdc, g, &r, pal.text, DT_CENTER_V);
-    }
     if c.search_rect.right > c.search_rect.left {
         fill(hdc, &c.search_rect, pal.edit_bg);
         let lit = c.search_editing || c.filter_active;
@@ -645,7 +613,6 @@ fn dock_rect(app: &App, spot: DropSpot) -> Option<RECT> {
 
 /// Work that must run outside the `with_app` borrow (modal menus/dialogs pump messages).
 enum Deferred {
-    Favorites(RECT),
     TabMenu(TabId, POINT),
     Focus(HWND),
 }
@@ -776,11 +743,6 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
             Hot::Button(b) => {
                 let tid = app.active_tab()?;
                 match b {
-                    Btn::Refresh => app.refresh_tab(tid),
-                    Btn::Favorites => {
-                        let r = app.chrome.buttons.iter().find(|(bb, _)| *bb == b).map(|(_, r)| *r)?;
-                        return Some(Deferred::Favorites(r));
-                    }
                     Btn::ClearFilter => {
                         app.clear_filter(tid);
                         return app.panes.get(&app.active_pane).map(|p| Deferred::Focus(p.grid()));
@@ -803,7 +765,6 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
     })
     .flatten();
     match deferred {
-        Some(Deferred::Favorites(r)) => favorites_menu(hwnd, r),
         Some(Deferred::Focus(h)) => unsafe {
             let _ = SetFocus(h);
         },
@@ -905,93 +866,9 @@ fn tab_menu(hwnd: HWND, tab: TabId, pt: POINT) {
     });
 }
 
-const FAV_ADD: u32 = 1;
-const FAV_BASE: u32 = 100;
-const FAV_OPEN: u32 = 1;
-const FAV_OPEN_TAB: u32 = 2;
-const FAV_REMOVE: u32 = 3;
-
 thread_local! {
-    /// The favorites popup while it is open (for WM_MENURBUTTONUP).
-    static FAV_MENU: Cell<isize> = const { Cell::new(0) };
-    /// Action picked from a favorite's right-click menu: (favorite index, command).
-    static FAV_PENDING: Cell<Option<(usize, u32)>> = const { Cell::new(None) };
     /// Path box colors, cached for WM_CTLCOLOREDIT arriving while the app is borrowed.
     static EDIT_COLORS: Cell<(COLORREF, COLORREF)> = const { Cell::new((COLORREF(0), COLORREF(0xFFFFFF))) };
-}
-
-fn favorites_menu(hwnd: HWND, button: RECT) {
-    let info = with_app(|app| {
-        let root = app.active_tab().and_then(|t| app.tabs.get(&t)).and_then(|t| t.root.clone());
-        let favs: Vec<String> = app.settings.favorites.iter().map(|f| f.path.clone()).collect();
-        (root, favs)
-    });
-    let Some((root, favs)) = info else { return };
-    let current = root.as_deref().map(path_key);
-    let is_fav = current.as_ref().is_some_and(|k| favs.iter().any(|f| path_key(f) == *k));
-    let cmd = unsafe {
-        let Ok(m) = CreatePopupMenu() else { return };
-        let add = if is_fav { "Update sort for current folder" } else { "Add current folder" };
-        append_menu(m, FAV_ADD as usize, add, root.is_some());
-        append_sep(m);
-        if favs.is_empty() {
-            append_menu(m, 0, "No favorites yet", false);
-        }
-        for (i, f) in favs.iter().enumerate() {
-            append_menu(m, FAV_BASE as usize + i, &f.replace('&', "&&"), true);
-            if Some(path_key(f)) == current {
-                let _ = CheckMenuItem(m, FAV_BASE + i as u32, MF_CHECKED.0);
-            }
-        }
-        FAV_MENU.set(m.0 as isize);
-        FAV_PENDING.set(None);
-        let pt = client_to_screen(hwnd, POINT { x: button.left, y: button.bottom });
-        let _ = SetForegroundWindow(hwnd);
-        let cmd = TrackPopupMenuEx(m, (TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN).0, pt.x, pt.y, hwnd, None).0 as u32;
-        FAV_MENU.set(0);
-        let _ = DestroyMenu(m);
-        cmd
-    };
-    let ctrl_down = ctrl();
-    with_app(|app| {
-        if let Some((i, sub)) = FAV_PENDING.take() {
-            match sub {
-                FAV_OPEN => app.open_favorite(i, false),
-                FAV_OPEN_TAB => app.open_favorite(i, true),
-                FAV_REMOVE => app.remove_favorite(i),
-                _ => {}
-            }
-        } else if cmd == FAV_ADD {
-            app.add_favorite();
-        } else if cmd >= FAV_BASE {
-            app.open_favorite((cmd - FAV_BASE) as usize, ctrl_down);
-        }
-    });
-}
-
-/// Right-click on a favorite inside the open favorites menu.
-fn on_menu_rbutton_up(hwnd: HWND, pos: usize, menu: HMENU) {
-    if FAV_MENU.get() == 0 || FAV_MENU.get() != menu.0 as isize {
-        return;
-    }
-    let id = unsafe { GetMenuItemID(menu, pos as i32) };
-    if id == u32::MAX || id < FAV_BASE {
-        return;
-    }
-    unsafe {
-        let Ok(m) = CreatePopupMenu() else { return };
-        append_menu(m, FAV_OPEN as usize, "Open", true);
-        append_menu(m, FAV_OPEN_TAB as usize, "Open in new tab", true);
-        append_sep(m);
-        append_menu(m, FAV_REMOVE as usize, "Remove from favorites", true);
-        let pt = cursor_pos();
-        let cmd = TrackPopupMenuEx(m, (TPM_RETURNCMD | TPM_RECURSE | TPM_RIGHTBUTTON).0, pt.x, pt.y, hwnd, None).0 as u32;
-        let _ = DestroyMenu(m);
-        if cmd != 0 {
-            FAV_PENDING.set(Some(((id - FAV_BASE) as usize, cmd)));
-            let _ = EndMenu();
-        }
-    }
 }
 
 fn apply_edit_font(app: &App) {
@@ -1271,10 +1148,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     return LRESULT(0);
                 }
             }
-        }
-        WM_MENURBUTTONUP => {
-            on_menu_rbutton_up(hwnd, wp.0, HMENU(lp.0 as _));
-            return LRESULT(0);
         }
         WM_CLOSE => {
             with_app(|app| app.save_settings());

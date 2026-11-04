@@ -38,6 +38,7 @@ const C_OPEN: u32 = ID_CUSTOM_FIRST + 9;
 const C_COPY: u32 = ID_CUSTOM_FIRST + 10;
 const C_REFRESH: u32 = ID_CUSTOM_FIRST + 11;
 const C_UNFAVORITE: u32 = ID_CUSTOM_FIRST + 12;
+const C_FAVORITE: u32 = ID_CUSTOM_FIRST + 13;
 
 struct Press {
     pane: PaneId,
@@ -1663,15 +1664,24 @@ fn prepare_menu(app: &mut App, pane: PaneId, hwnd: HWND, keyboard: bool, pt: POI
         if !virt {
             items.push(MenuItem::Item(C_EXPLORER, "Open in Explorer".into()));
         }
-        if is_favorite_root(t, nodes[0]) {
-            items.push(MenuItem::Item(C_UNFAVORITE, "Remove from favorites".into()));
-        }
     }
+    let fav_path = match t.tree.get(nodes[0]) {
+        Some(n) if nodes.len() == 1 && n.kind == Kind::Dir => Some(n.path.clone()),
+        _ => None,
+    };
     if virt {
         items.push(MenuItem::Item(C_COPY, "Copy".into()));
     }
     items.push(MenuItem::Item(C_COPY_PATH, "Copy path".into()));
     let shell_paths = if virt { vec![] } else { paths_of(t, &nodes) };
+    if let Some(p) = fav_path {
+        items.push(MenuItem::Sep);
+        items.push(if app.favorite_index(&p).is_some() {
+            MenuItem::Item(C_UNFAVORITE, "Remove from favorites".into())
+        } else {
+            MenuItem::Item(C_FAVORITE, "Add to favorites".into())
+        });
+    }
     if !shell_paths.is_empty() {
         items.push(MenuItem::Sep);
     }
@@ -1737,6 +1747,10 @@ fn handle_menu(app: &mut App, pane: PaneId, prep: MenuPrep, res: MenuResult) -> 
                 if let Some(i) = app.favorite_index(&path) {
                     app.remove_favorite(i);
                 }
+            }
+            C_FAVORITE => {
+                let path = app.tabs.get(&tid)?.tree.get(nodes[0])?.path.clone();
+                app.add_favorite(tid, path);
             }
             _ => {}
         },
