@@ -2455,16 +2455,35 @@ pub fn begin_rename(app: &mut App, pane: PaneId, id: NodeId) {
         SendMessageW(edit, WM_SETFONT, WPARAM(app.fonts.ui.0 as usize), LPARAM(1));
         crate::theme::set_control_theme(edit, app.dark, "DarkMode_CFD");
         let _ = SetWindowSubclass(edit, Some(edit_proc), 1, 0);
+        let margin = rename_margin(app.dpi) as usize;
+        SendMessageW(edit, EM_SETMARGINS, WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize), LPARAM((margin | margin << 16) as isize));
         let end = match (kind, extension_start(&name)) {
-            (Kind::File | Kind::Zip, Some(i)) => name[..i].encode_utf16().count() as isize,
-            _ => -1,
+            (Kind::File | Kind::Zip, Some(i)) => name[..i].encode_utf16().count(),
+            _ => name.encode_utf16().count(),
         };
-        SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(end));
         app.grid_ui.rename = Some(Rename { edit: hwnd_to_isize(edit), pane, tab: tid, node: id, original: name });
         app.after_change(tid);
         sync(app, pane);
+        // Select once the edit is sized and focused. EM_SETSEL always scrolls to the
+        // far end of the selection, which cuts a long name in the middle, so select
+        // with Shift+Home from `end` instead: caret at 0, the name shown from its start.
         let _ = SetFocus(edit);
+        SendMessageW(edit, EM_SETSEL, WPARAM(end), LPARAM(end as isize));
+        let mut keys = [0u8; 256];
+        if GetKeyboardState(&mut keys).is_ok() {
+            let mut shifted = keys;
+            shifted[VK_SHIFT.0 as usize] = 0x80;
+            let _ = SetKeyboardState(&shifted);
+            SendMessageW(edit, WM_KEYDOWN, WPARAM(VK_HOME.0 as usize), LPARAM(0));
+            let _ = SetKeyboardState(&keys);
+        } else {
+            SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(end as isize));
+        }
     }
+}
+
+fn rename_margin(dpi: u32) -> i32 {
+    scale(2, dpi)
 }
 
 /// Positions the rename edit over its row (hides it when scrolled out of view).
@@ -2482,15 +2501,19 @@ fn place_rename(app: &mut App) {
             return None;
         }
         let depth = t.tree.get(node)?.depth;
-        let x = m.text_x(t.scroll_x, depth) - scale(3, app.dpi);
+        // Text lines up with the label: 1px border + the edit's left margin.
+        let x = m.text_x(t.scroll_x, depth) - rename_margin(app.dpi) - 1;
         let right = -t.scroll_x + m.cols[0];
         let y = geo.row_y(r, t.top)?;
         Some((x, y, (right - x).max(scale(80, app.dpi))))
     });
+    // A single-line EDIT draws text at the top of its client area, so size it
+    // to the font (plus border) and centre the box in the row instead.
+    let h = app.fonts.ui_height + 2;
     unsafe {
         match place {
             Some((x, y, w)) => {
-                let _ = MoveWindow(edit, x, y + 1, w, m.row - 2, true);
+                let _ = MoveWindow(edit, x, y + (m.row - h) / 2, w, h, true);
                 let _ = ShowWindow(edit, SW_SHOW);
             }
             None => {
