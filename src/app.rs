@@ -502,7 +502,7 @@ impl App {
         }
         let (sort, desc) = self.active_sort();
         let tid = self.open_tab(None, sort, desc);
-        self.go_to(tid, &path);
+        self.go_to(tid, &path, true);
         self.external_tab = Some(tid);
     }
 
@@ -516,7 +516,7 @@ impl App {
             root.is_some() && root == parent
         });
         match tid {
-            Some(tid) if self.go_to(tid, &path) => {}
+            Some(tid) if self.go_to(tid, &path, true) => {}
             _ => self.open_external(&path),
         }
     }
@@ -805,13 +805,14 @@ impl App {
     }
 
     /// Goes to a typed or pasted path (quotes and %VARS% allowed; empty = This PC). Folders and
-    /// archives become the tab root; a file roots the tab at its folder with the file selected.
-    pub fn go_to(&mut self, tid: TabId, text: &str) -> bool {
+    /// archives become the tab root (unless `zip_as_file`); a file roots the tab at its folder
+    /// with the file selected.
+    pub fn go_to(&mut self, tid: TabId, text: &str, zip_as_file: bool) -> bool {
         let path = expand_env(&clean_path_input(text));
         if path.is_empty() {
             return self.navigate(tid, None, true);
         }
-        let file = loader::entry_for_path(&path).filter(|e| e.kind == Kind::File);
+        let file = loader::entry_for_path(&path).filter(|e| e.kind == Kind::File || (zip_as_file && e.kind == Kind::Zip));
         let Some((parent, file)) = file.and_then(|e| parent_path(&e.path).map(|p| (p, e.path))) else {
             return self.navigate(tid, Some(&path), true);
         };

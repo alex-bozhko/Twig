@@ -47,7 +47,8 @@ file operations.
 ### Command line
 
 - `Twig.exe <path>` opens the folder (or a file's folder with the file
-  selected) in a new tab.
+  selected) in a new tab. A zip archive is treated as a file here: its folder
+  opens with the archive selected.
 - Single instance: launching Twig again forwards the path to the running
   window as a new tab and brings it to the front.
 

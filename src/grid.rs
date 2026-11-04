@@ -2178,7 +2178,7 @@ fn finish_path_edit(app: &mut App, go: usize) {
         if go == 0 {
             app.clear_filter(tid);
         }
-    } else if go == 1 && !app.go_to(tid, &get_text(edit)) {
+    } else if go == 1 && !app.go_to(tid, &get_text(edit), false) {
         balloon(edit, "Go to", "That path doesn't exist or can't be opened.");
         return;
     }
