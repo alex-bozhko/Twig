@@ -2053,6 +2053,7 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
             let nd = t.tree.get(id)?;
             if nd.expandable() && nd.expanded {
                 app.collapse(tid, id);
+                app.after_change(tid);
             } else if let Some(p) = nd.parent {
                 if let Some(r) = t.row_of(p) {
                     move_to(app, tid, r);
@@ -2064,6 +2065,7 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
             let nd = t.tree.get(id)?;
             if nd.expandable() && !nd.expanded {
                 app.expand(tid, id);
+                app.after_change(tid);
             } else if nd.expanded {
                 // The first child still shown (the filter may hide some).
                 let kids = t.tree.children(id).to_vec();
