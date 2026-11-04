@@ -123,7 +123,25 @@ impl Drop for Fonts {
 }
 
 fn glyph_font(px: i32, quality: FONT_QUALITY) -> HFONT {
-    for face in ["Segoe Fluent Icons", "Segoe MDL2 Assets"] {
+    first_font(&["Segoe Fluent Icons", "Segoe MDL2 Assets"], px, quality).unwrap_or_else(|| {
+        let mut lf = LOGFONTW { lfHeight: -px, ..Default::default() };
+        let w = wide("Segoe UI Symbol");
+        lf.lfFaceName[..w.len()].copy_from_slice(&w);
+        unsafe { CreateFontIndirectW(&lf) }
+    })
+}
+
+/// A monospaced font for code and plain text (Cascadia Mono, else Consolas, else the system fixed font).
+pub fn mono_font(px: i32) -> HFONT {
+    first_font(&["Cascadia Mono", "Consolas"], px, CLEARTYPE_QUALITY).unwrap_or_else(|| {
+        let lf = LOGFONTW { lfHeight: -px, lfPitchAndFamily: FIXED_PITCH.0 as u8 | FF_MODERN.0 as u8, ..Default::default() };
+        unsafe { CreateFontIndirectW(&lf) }
+    })
+}
+
+/// Creates the first installed font of `faces`.
+fn first_font(faces: &[&str], px: i32, quality: FONT_QUALITY) -> Option<HFONT> {
+    for &face in faces {
         let mut lf = LOGFONTW { lfHeight: -px, lfCharSet: DEFAULT_CHARSET, lfQuality: quality, ..Default::default() };
         let w = wide(face);
         lf.lfFaceName[..w.len()].copy_from_slice(&w);
@@ -137,15 +155,12 @@ fn glyph_font(px: i32, quality: FONT_QUALITY) -> HFONT {
             SelectObject(hdc, old);
             ReleaseDC(None, hdc);
             if n > 0 && String::from_utf16_lossy(&buf[..(n as usize).saturating_sub(1)]).eq_ignore_ascii_case(face) {
-                return f;
+                return Some(f);
             }
             let _ = DeleteObject(f);
         }
     }
-    let mut lf = LOGFONTW { lfHeight: -px, ..Default::default() };
-    let w = wide("Segoe UI Symbol");
-    lf.lfFaceName[..w.len()].copy_from_slice(&w);
-    unsafe { CreateFontIndirectW(&lf) }
+    None
 }
 
 pub mod glyph {
@@ -173,6 +188,7 @@ pub mod glyph {
     pub const NEW_FOLDER: &str = "\u{E8F4}";
     pub const NEW_FILE: &str = "\u{E8A5}";
     pub const UNDO: &str = "\u{E7A7}";
+    pub const OPEN: &str = "\u{E8A7}";
 }
 
 /// Reads the "apps use light theme" preference.

@@ -103,6 +103,20 @@ pub fn extract(archive: &str, inner: &[String]) -> Result<Vec<PathBuf>, String> 
     Ok(result)
 }
 
+/// Reads up to `limit` bytes of the file entry `inner` (for previews). Returns the bytes and the entry's full size.
+pub fn read_entry(archive: &str, inner: &str, limit: u64) -> Result<(Vec<u8>, u64), String> {
+    let f = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+    let mut ar = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| e.to_string())?;
+    // `file_names` follows the archive's index order.
+    let names: Vec<String> = ar.file_names().map(|s| s.replace('\\', "/")).collect();
+    let i = names.iter().position(|n| n.eq_ignore_ascii_case(inner)).ok_or("The entry was not found in the archive")?;
+    let zf = ar.by_index(i).map_err(|e| e.to_string())?;
+    let size = zf.size();
+    let mut buf = Vec::with_capacity(size.min(limit) as usize);
+    zf.take(limit).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    Ok((buf, size))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +150,8 @@ mod tests {
         let r2 = extract(&a, &["dir/".into()]).unwrap();
         assert_ne!(r[0].parent(), r2[0].parent());
         assert_eq!(std::fs::read_to_string(r2[0].join("sub").join("b.txt")).unwrap(), "bye");
+        assert_eq!(read_entry(&a, "DIR/a.txt", 3).unwrap(), (b"hel".to_vec(), 5));
+        assert!(read_entry(&a, "dir/missing.txt", 3).is_err());
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_dir_all(r[0].parent().unwrap());
         let _ = std::fs::remove_dir_all(r2[0].parent().unwrap());

@@ -601,6 +601,7 @@ impl App {
         crate::grid::end_path_edit(self);
         crate::grid::sync(self, pane);
         invalidate(self.hwnd);
+        self.preview_follow();
         unsafe {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(grid);
         }
@@ -613,7 +614,17 @@ impl App {
             for p in self.panes.values() {
                 invalidate(p.grid());
             }
+            self.preview_follow();
         }
+    }
+
+    /// Points an open Quick Look window at the active tab's focused item.
+    pub fn preview_follow(&self) {
+        if !crate::preview::is_open() {
+            return;
+        }
+        let t = self.panes.get(&self.active_pane).and_then(|p| p.active_tab()).and_then(|tid| self.tabs.get(&tid));
+        crate::preview::follow(t.and_then(|t| t.focus.and_then(|id| t.tree.get(id))).map(crate::preview::Target::from_node));
     }
 
     pub fn close_tab(&mut self, tab: TabId) {
@@ -1312,6 +1323,7 @@ impl App {
             }
         }
         invalidate(self.hwnd);
+        self.preview_follow();
     }
 
     /// Clears the filter and turns subfolder search off (Esc, the × button).
@@ -1875,6 +1887,7 @@ impl App {
         self.dark = dark;
         self.pal = Palette::new(dark);
         crate::theme::set_title_bar_dark(self.hwnd, dark);
+        crate::preview::set_dark(dark);
         for p in self.panes.values() {
             crate::theme::set_control_theme(p.grid(), dark, "DarkMode_Explorer");
         }

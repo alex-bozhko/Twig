@@ -12,6 +12,7 @@ mod loader;
 mod logwin;
 mod mainwin;
 mod model;
+mod preview;
 mod scan;
 mod settings;
 mod settingswin;

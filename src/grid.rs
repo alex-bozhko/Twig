@@ -79,6 +79,8 @@ pub struct GridUi {
     bar_hover: Option<(PaneId, BarHot)>,
     /// The last click navigated via the breadcrumb; its double-click must not hit the new layout.
     swallow_dbl: bool,
+    /// The last Space press toggled Quick Look, so its character isn't a type-ahead search.
+    quick_space: bool,
     /// Current drag-and-drop target row.
     pub drop: Option<(PaneId, NodeId)>,
     /// (pane, column, start x, start width at 96 DPI)
@@ -420,6 +422,8 @@ enum Deferred {
     Properties(String),
     Drag(Vec<String>, DROPEFFECT),
     Recycle(TabId, Vec<String>, String),
+    Preview(Option<crate::preview::Target>),
+    ClosePreview,
 }
 
 fn active_tid(app: &App, pane: PaneId) -> Option<TabId> {
@@ -491,6 +495,11 @@ fn run_deferred(hwnd: HWND, d: Option<Deferred>) {
                 with_app(|app| app.run_op(tid, Op::Delete { items, recycle: true }, Some(msg)));
             }
         }
+        Deferred::Preview(t) => {
+            let dark = with_app(|app| app.dark).unwrap_or(false);
+            crate::preview::toggle(unsafe { GetAncestor(hwnd, GA_ROOT) }, dark, t);
+        }
+        Deferred::ClosePreview => crate::preview::close(),
     }
 }
 
@@ -643,7 +652,8 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             return LRESULT(0);
         }
         WM_KEYDOWN => {
-            let d = with_app(|app| on_key(app, pane, wp.0 as u16)).flatten();
+            let repeat = (lp.0 >> 30) & 1 != 0;
+            let d = with_app(|app| if wp.0 as u16 == VK_SPACE.0 { quick_look_key(app, pane, repeat) } else { on_key(app, pane, wp.0 as u16) }).flatten();
             run_deferred(hwnd, d);
             return LRESULT(0);
         }
@@ -662,7 +672,11 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         WM_CHAR => {
             if let Some(ch) = char::from_u32(wp.0 as u32) {
                 if ch >= ' ' && !ctrl() && !alt() {
-                    with_app(|app| type_search_char(app, pane, ch));
+                    with_app(|app| {
+                        if !(ch == ' ' && app.grid_ui.quick_space) {
+                            type_search_char(app, pane, ch);
+                        }
+                    });
                 }
             }
             return LRESULT(0);
@@ -2058,6 +2072,7 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
                 }
             }
         }
+        VK_ESCAPE if crate::preview::is_open() => return Some(Deferred::ClosePreview),
         VK_ESCAPE if !t.filter.is_empty() || t.deep => app.clear_filter(tid),
         VK_RETURN | VK_F2 => begin_rename(app, pane, focus?),
         VK_F5 => app.refresh_tab(tid),
@@ -2091,6 +2106,28 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
         _ => {}
     }
     None
+}
+
+/// Space toggles Quick Look for the focused item, unless it continues a type-ahead search
+/// (names with spaces) or Ctrl+Space toggles selection.
+fn quick_look_key(app: &mut App, pane: PaneId, repeat: bool) -> Option<Deferred> {
+    if ctrl() || alt() {
+        app.grid_ui.quick_space = false;
+        return on_key(app, pane, VK_SPACE.0);
+    }
+    if repeat {
+        return None;
+    }
+    let ui = &mut app.grid_ui;
+    let typing = !ui.search.is_empty() && ui.search_at.is_some_and(|at| at.elapsed().as_millis() <= 1000);
+    ui.quick_space = !typing;
+    if typing {
+        return None;
+    }
+    let tid = active_tid(app, pane)?;
+    let t = app.tabs.get(&tid)?;
+    let target = t.focus.and_then(|id| t.tree.get(id)).map(crate::preview::Target::from_node);
+    Some(Deferred::Preview(target))
 }
 
 fn type_search_char(app: &mut App, pane: PaneId, ch: char) {

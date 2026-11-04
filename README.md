@@ -94,6 +94,17 @@ file operations.
   that still exists).
 - Kept across restarts (last 500 entries) in `%LOCALAPPDATA%\Twig\log.json`.
 
+### Quick Look
+
+- `Space` previews the selected item in a Finder-style pop-up; `Space` or
+  `Esc` closes it. Arrow keys keep working and the preview follows the
+  selection.
+- Text and source files (with line numbers) and images (PNG, JPEG, GIF, BMP,
+  TIFF, ICO, WebP…) are rendered, including entries inside zip archives;
+  anything else gets an info card with icon, size and dates.
+- The open button launches the item; the window can be moved and resized and
+  remembers its document size for the session.
+
 ### Zip archives
 
 - Zip files expand like folders without unpacking on disk.

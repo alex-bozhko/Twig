@@ -27,6 +27,8 @@ pub const WM_SCAN: u32 = WM_APP + 19;
 pub const WM_OPEN_PATH: u32 = WM_APP + 20;
 /// The update check or install moved to a new phase (see `updater`).
 pub const WM_UPDATE: u32 = WM_APP + 21;
+/// The Quick Look worker finished loading a preview (see `preview`).
+pub const WM_PREVIEW_LOADED: u32 = WM_APP + 22;
 
 static MAIN: AtomicIsize = AtomicIsize::new(0);
 
