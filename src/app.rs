@@ -93,8 +93,29 @@ pub struct Tab {
     pub scan: Option<ScanState>,
     /// A path is being typed into the breadcrumb bar.
     pub editing_path: bool,
+    /// Navigation history: earlier views (most recent last) and views gone back from.
+    back: Vec<HistEntry>,
+    fwd: Vec<HistEntry>,
     dirty: bool,
     focus_row: usize,
+}
+
+/// A tab's view as recorded for Back/Forward.
+struct HistEntry {
+    root: Option<String>,
+    /// Path keys.
+    selected: Vec<String>,
+    expanded: Vec<String>,
+    top: usize,
+}
+
+const HISTORY_MAX: usize = 50;
+
+fn push_history(stack: &mut Vec<HistEntry>, e: HistEntry) {
+    stack.push(e);
+    if stack.len() > HISTORY_MAX {
+        stack.remove(0);
+    }
 }
 
 /// Progress of a tab's subfolder-search scan.
@@ -140,6 +161,8 @@ impl Tab {
             deep: false,
             scan: None,
             editing_path: false,
+            back: Vec::new(),
+            fwd: Vec::new(),
             dirty: true,
             focus_row: 0,
         }
@@ -147,6 +170,27 @@ impl Tab {
 
     pub fn mark(&mut self) {
         self.dirty = true;
+    }
+
+    pub fn can_back(&self) -> bool {
+        !self.back.is_empty()
+    }
+
+    pub fn can_forward(&self) -> bool {
+        !self.fwd.is_empty()
+    }
+
+    /// The current view for the history, counting selection and expansion still pending.
+    fn snapshot(&mut self) -> HistEntry {
+        let selected = if self.pending_select.is_empty() {
+            let ids = self.selected();
+            ids.into_iter().filter_map(|id| self.tree.get(id)).map(|n| path_key(&n.path)).collect()
+        } else {
+            self.pending_select.clone()
+        };
+        let mut expanded: Vec<String> = self.tree.expanded_paths().iter().map(|p| path_key(p)).collect();
+        expanded.extend(self.want_expanded.iter().cloned());
+        HistEntry { root: self.root.clone(), selected, expanded, top: self.restore_top.unwrap_or(self.top) }
     }
 
     /// Rebuilds the visible rows if needed and keeps focus/anchor valid.
@@ -503,6 +547,10 @@ impl App {
         let (sort, desc) = self.active_sort();
         let tid = self.open_tab(None, sort, desc);
         self.go_to(tid, &path, true);
+        if let Some(t) = self.tabs.get_mut(&tid) {
+            // A fresh tab: nothing to go back to.
+            t.back.clear();
+        }
         self.external_tab = Some(tid);
     }
 
@@ -730,8 +778,64 @@ impl App {
 
     /// Shows `target` in tab `tid`. `None` = This PC. With `rooted`, the target becomes the tab
     /// root; otherwise the tab shows the target's drive tree with the target selected and centered.
+    /// The view it leaves is recorded for Back.
     pub fn navigate(&mut self, tid: TabId, target: Option<&str>, rooted: bool) -> bool {
         crate::grid::end_rename(self, false);
+        let snap = self.tabs.get_mut(&tid).map(Tab::snapshot);
+        if !self.show(tid, target, rooted) {
+            return false;
+        }
+        if let (Some(snap), Some(t)) = (snap, self.tabs.get_mut(&tid)) {
+            push_history(&mut t.back, snap);
+            t.fwd.clear();
+        }
+        true
+    }
+
+    /// Goes back (or forward) in `tid`'s history: restores that view's root, expanded folders,
+    /// scroll position and selection. Views identical to the current one are skipped.
+    pub fn nav_history(&mut self, tid: TabId, back: bool) -> bool {
+        crate::grid::end_rename(self, false);
+        let Some(t) = self.tabs.get_mut(&tid) else { return false };
+        let cur = t.snapshot();
+        let same_view = |e: &HistEntry| e.root.as_deref().map(path_key) == cur.root.as_deref().map(path_key) && e.selected == cur.selected;
+        let e = loop {
+            let stack = if back { &mut t.back } else { &mut t.fwd };
+            match stack.pop() {
+                Some(e) if same_view(&e) => continue,
+                Some(e) => break e,
+                None => return false,
+            }
+        };
+        let same_root = e.root.as_deref().map(path_key) == cur.root.as_deref().map(path_key) && t.error.is_none() && !t.tree.roots.is_empty();
+        let root = match e.root.as_deref() {
+            Some(r) if !same_root => match nearest_existing(r) {
+                Some(r) => Some(r),
+                None => {
+                    let msg = format!("Folder not found: {r}");
+                    push_history(if back { &mut t.back } else { &mut t.fwd }, e);
+                    self.set_status_error(msg);
+                    return false;
+                }
+            },
+            _ => None,
+        };
+        push_history(if back { &mut t.fwd } else { &mut t.back }, cur);
+        if !same_root {
+            self.set_root(tid, root);
+        }
+        let Some(t) = self.tabs.get_mut(&tid) else { return false };
+        let root_key = t.root.as_deref().map(path_key);
+        t.want_expanded.extend(e.expanded.into_iter().filter(|k| Some(k) != root_key.as_ref()));
+        t.pending_select = e.selected;
+        t.reveal = None;
+        t.restore_top = Some(e.top);
+        self.process_wants(tid);
+        self.after_change(tid);
+        true
+    }
+
+    fn show(&mut self, tid: TabId, target: Option<&str>, rooted: bool) -> bool {
         let Some(target) = target.map(normalize_path) else {
             self.set_root(tid, None);
             self.after_change(tid);
@@ -1083,7 +1187,8 @@ impl App {
                     t.anchor = Some(found[0]);
                     t.focus = Some(found[0]);
                     t.mark();
-                    if t.reveal.is_none() {
+                    // A pending scroll restore reveals the selection once it's applied.
+                    if t.reveal.is_none() && t.restore_top.is_none() {
                         let key = path_key(&t.tree.get(found[0]).unwrap().path);
                         t.reveal = Some((key, Reveal::Visible));
                     }
@@ -1091,10 +1196,16 @@ impl App {
             }
         }
         t.ensure_rows();
-        // Scroll restore once all expansions are done.
+        // Scroll restore once all expansions are done, then keep the selection in view.
         if t.want_expanded.is_empty() {
             if let Some(top) = t.restore_top.take() {
                 t.top = top;
+                if t.reveal.is_none() && t.pending_select.is_empty() {
+                    let first = t.tree.selection(&t.rows).first().copied();
+                    if let Some(n) = first.and_then(|id| t.tree.get(id)) {
+                        t.reveal = Some((path_key(&n.path), Reveal::Visible));
+                    }
+                }
             }
         }
         // Reveal.

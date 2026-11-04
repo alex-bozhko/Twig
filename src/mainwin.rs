@@ -1032,6 +1032,19 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
         });
         return true;
     }
+    if msg.message == WM_SYSKEYDOWN && (msg.wParam.0 == 0x25 || msg.wParam.0 == 0x27) && !ctrl() && !shift() {
+        // Alt+Left / Alt+Right: back / forward in the active tab's history
+        if msg.hwnd != main && unsafe { !IsChild(main, msg.hwnd).as_bool() } {
+            return false;
+        }
+        let back = msg.wParam.0 == 0x25;
+        with_app(|app| {
+            if let Some(t) = app.active_tab() {
+                crate::grid::nav_history(app, t, back);
+            }
+        });
+        return true;
+    }
     if msg.message != WM_KEYDOWN {
         return false;
     }

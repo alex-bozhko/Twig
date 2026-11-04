@@ -25,6 +25,10 @@ file operations.
   path opens its folder with the file selected, `Enter` goes there, and `Esc`
   or clicking away cancels. Starting the text with `:` filters the tab instead
   (see Filter below).
+- Each tab has its own back/forward history (the small arrows at the right end
+  of the breadcrumb bar, `Alt+←`/`Alt+→`, `Backspace`, or the mouse side
+  buttons). Going back restores the previous folder, what was expanded and
+  scrolled, and re-selects what was selected.
 - Click a column header to sort, drag header edges to resize.
 - Type-to-search jumps to the next matching item in the current folder.
 - The status bar shows the active tab's item count, and the number and total

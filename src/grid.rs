@@ -172,6 +172,9 @@ pub enum Hit {
     BarClear,
     /// The "Subfolders" checkbox in the breadcrumb bar.
     BarDeep,
+    /// The bar's Back / Forward arrows.
+    BarBack,
+    BarFwd,
     Empty,
     Nothing,
 }
@@ -182,6 +185,8 @@ enum BarHot {
     Filter,
     Clear,
     Deep,
+    Back,
+    Fwd,
 }
 
 const DEEP_LABEL: &str = "Subfolders";
@@ -325,12 +330,17 @@ struct BarExtras {
     label: bool,
     deep_on: bool,
     deep_ok: bool,
+    /// Back/Forward arrows at the far right.
+    back: RECT,
+    fwd: RECT,
+    back_ok: bool,
+    fwd_ok: bool,
     /// Where the crumbs (or the path editor) must end.
     right: i32,
 }
 
 /// Lays out `pane`'s breadcrumb bar for a `w`×`h` grid: crumbs on the left (none while the path
-/// editor is open), the filter chip and subfolder checkbox on the right.
+/// editor is open); the filter chip, subfolder checkbox and Back/Forward arrows on the right.
 fn bar_layout(app: &App, pane: PaneId, hdc: HDC, w: i32, h: i32) -> (Vec<Crumb>, BarExtras) {
     let m = metrics(app);
     let d = app.dpi;
@@ -343,6 +353,12 @@ fn bar_layout(app: &App, pane: PaneId, hdc: HDC, w: i32, h: i32) -> (Vec<Crumb>,
     let icon_w = m.header;
     let gap = scale(4, d);
     let mut right = b.right - scale(2, d);
+    let aw = scale(24, d);
+    ex.fwd = RECT { left: right - aw, right, ..b };
+    ex.back = RECT { left: right - 2 * aw, right: right - aw, ..b };
+    ex.back_ok = t.can_back();
+    ex.fwd_ok = t.can_forward();
+    right = ex.back.left - gap;
     if filter_edit || (!editing && (!t.filter.is_empty() || t.deep)) {
         let full = scale(8 + 14 + 6 + 8, d) + text_width(hdc, app.fonts.ui, DEEP_LABEL);
         ex.label = right - full - b.left >= scale(200, d);
@@ -591,6 +607,17 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             with_app(|app| on_lbutton_up(app, pane));
             let _ = ReleaseCapture();
             return LRESULT(0);
+        }
+        WM_XBUTTONUP => {
+            let button = (wp.0 >> 16) & 0xFFFF;
+            if button == 1 || button == 2 {
+                with_app(|app| {
+                    if let Some(tid) = active_tid(app, pane) {
+                        nav_history(app, tid, button == 1);
+                    }
+                });
+            }
+            return LRESULT(1);
         }
         WM_CAPTURECHANGED => {
             with_app(|app| {
@@ -851,6 +878,12 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
         };
         if ex.deep.is_some_and(|r| pt_in(&r, x, y)) {
             return Hit::BarDeep;
+        }
+        if pt_in(&ex.back, x, y) {
+            return Hit::BarBack;
+        }
+        if pt_in(&ex.fwd, x, y) {
+            return Hit::BarFwd;
         }
         if editing {
             return Hit::Nothing;
@@ -1206,6 +1239,16 @@ fn draw_bar_extras(hdc: HDC, b: &CrumbBar, pal: &crate::theme::Palette) {
             draw_text(hdc, check, &inner, color, DT_CENTER_V);
         }
     }
+    unsafe {
+        SelectObject(hdc, b.glyph_small);
+    }
+    for (r, ok, hot, g) in [(ex.back, ex.back_ok, BarHot::Back, glyph::BACK), (ex.fwd, ex.fwd_ok, BarHot::Fwd, glyph::FORWARD)] {
+        let hot = ok && b.hover == Some(hot);
+        if hot {
+            fill(hdc, &inset(&r, scale(5, d)), pal.hover);
+        }
+        draw_text(hdc, g, &r, if !ok { pal.border } else if hot { pal.text } else { pal.text_dim }, DT_CENTER_V);
+    }
 }
 
 // ---------- Selection helpers ----------
@@ -1405,6 +1448,16 @@ fn on_lbutton(app: &mut App, pane: PaneId, x: i32, y: i32) -> bool {
             toggle_deep(app, tid);
             false
         }
+        Hit::BarBack => {
+            app.grid_ui.swallow_dbl = true;
+            nav_history(app, tid, true);
+            false
+        }
+        Hit::BarFwd => {
+            app.grid_ui.swallow_dbl = true;
+            nav_history(app, tid, false);
+            false
+        }
         Hit::Divider(c) => {
             app.grid_ui.col_drag = Some((pane, c, x, app.settings.columns[c]));
             true
@@ -1520,6 +1573,8 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
         Hit::BarFilter => (None, Some((pane, BarHot::Filter)), None),
         Hit::BarClear => (None, Some((pane, BarHot::Clear)), None),
         Hit::BarDeep => (None, Some((pane, BarHot::Deep)), None),
+        Hit::BarBack => (None, Some((pane, BarHot::Back)), None),
+        Hit::BarFwd => (None, Some((pane, BarHot::Fwd)), None),
         _ => (None, None, None),
     };
     if app.grid_ui.hover != row || app.grid_ui.bar_hover != bar {
@@ -2008,6 +2063,7 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
         VK_ESCAPE if !t.filter.is_empty() || t.deep => app.clear_filter(tid),
         VK_RETURN | VK_F2 => begin_rename(app, pane, focus?),
         VK_F5 => app.refresh_tab(tid),
+        VK_BACK if !c && !s => nav_history(app, tid, true),
         VK_DELETE => {
             let nodes = t.selected();
             return delete_nodes(app, tid, &nodes, !s);
@@ -2153,10 +2209,7 @@ fn place_path_edit(app: &mut App) {
     let h = app.panes.get(&pane).map_or(0, |p| client_rect(p.grid()).bottom);
     let mut b = crumb_box(app, w, h);
     if shown {
-        let (_, ex) = bar_layout_of(app, pane);
-        if ex.deep.is_some() {
-            b.right = ex.right;
-        }
+        b.right = bar_layout_of(app, pane).1.right;
     }
     b.right = b.right.max(b.left);
     unsafe {
@@ -2228,7 +2281,7 @@ pub fn toggle_deep(app: &mut App, tid: TabId) {
     }
 }
 
-/// Status-bar hint for the hovered filter chip or "Subfolders" checkbox.
+/// Status-bar hint for the hovered filter chip, "Subfolders" checkbox or Back/Forward arrow.
 pub fn bar_hint(app: &App) -> Option<String> {
     let (pane, hot) = app.grid_ui.bar_hover?;
     let t = active_tid(app, pane).and_then(|t| app.tabs.get(&t))?;
@@ -2241,7 +2294,19 @@ pub fn bar_hint(app: &App) -> Option<String> {
             "Search subfolders (Alt+S) — not available here: open a folder or drive first".to_string()
         }
         BarHot::Deep => "Search subfolders (Alt+S) — filter every item under this tab's folder".to_string(),
+        BarHot::Back if t.can_back() => "Back (Alt+Left)".to_string(),
+        BarHot::Back => "Back (Alt+Left) — nothing to go back to in this tab".to_string(),
+        BarHot::Fwd if t.can_forward() => "Forward (Alt+Right)".to_string(),
+        BarHot::Fwd => "Forward (Alt+Right) — nothing to go forward to in this tab".to_string(),
     })
+}
+
+/// Goes back/forward in `tid`'s navigation history, closing the path editor first.
+pub fn nav_history(app: &mut App, tid: TabId, back: bool) {
+    if app.grid_ui.path_edit.as_ref().is_some_and(|pe| pe.tab == tid) {
+        close_path_edit(app);
+    }
+    app.nav_history(tid, back);
 }
 
 fn close_path_edit(app: &mut App) {

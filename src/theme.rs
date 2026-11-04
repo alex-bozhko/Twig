@@ -149,6 +149,8 @@ pub mod glyph {
     pub const STAR: &str = "\u{E734}";
     pub const CHEVRON_RIGHT: &str = "\u{E76C}";
     pub const CHEVRON_DOWN: &str = "\u{E70D}";
+    pub const BACK: &str = "\u{E72B}";
+    pub const FORWARD: &str = "\u{E72A}";
     pub const CLOSE: &str = "\u{E8BB}";
     pub const ADD: &str = "\u{E710}";
     pub const FILTER: &str = "\u{E71C}";
