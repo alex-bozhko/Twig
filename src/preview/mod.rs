@@ -30,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// How a viewer would like the window sized.
 pub enum Pref {
-    /// Fit content of this pixel size (never enlarged).
+    /// Image content of this pixel size, scaled to the document size with its proportions kept.
     Fit(i32, i32),
     /// A document: a tall, reading-sized window the user may resize.
     Doc,
@@ -232,15 +232,17 @@ fn layout(hwnd: HWND) {
     let work = work_area(anchor);
     let (ww, wh) = (work.right - work.left, work.bottom - work.top);
     let th = scale(TITLE_H, dpi);
+    // Documents and images share one size: the user's last document size, or a share of the screen.
+    let (dw, dh) = match DOC_SIZE.with(|d| d.get()) {
+        Some((w, h)) => (scale(w, dpi), scale(h, dpi) - th),
+        None => (ww * DOC_PERCENT / 100, wh * DOC_PERCENT / 100 - th),
+    };
     let (cw, ch) = match pref {
         Pref::Fit(w, h) => {
-            let (fw, fh) = image::fit((w, h), (ww * 7 / 10, wh * 8 / 10 - th));
+            let (fw, fh) = image::contain((w, h), (dw, dh));
             (fw.max(scale(MIN_CONTENT.0, dpi)), fh.max(scale(MIN_CONTENT.1, dpi)))
         }
-        Pref::Doc => match DOC_SIZE.with(|d| d.get()) {
-            Some((w, h)) => (scale(w, dpi), scale(h, dpi) - th),
-            None => (ww * DOC_PERCENT / 100, wh * DOC_PERCENT / 100 - th),
-        },
+        Pref::Doc => (dw, dh),
         Pref::Card(h) => (scale(CARD_W, dpi), scale(h, dpi)),
     };
     let (w, h) = (cw.min(ww), (ch + th).min(wh));

@@ -134,6 +134,12 @@ pub fn fit(img: (i32, i32), max: (i32, i32)) -> (i32, i32) {
     if w <= max.0 && h <= max.1 {
         return (w, h);
     }
+    contain(img, max)
+}
+
+/// `img` scaled up or down to the largest size that fits in `max`, at least 1×1.
+pub fn contain(img: (i32, i32), max: (i32, i32)) -> (i32, i32) {
+    let (w, h) = (img.0.max(1), img.1.max(1));
     let k = (max.0 as f64 / w as f64).min(max.1 as f64 / h as f64);
     (((w as f64 * k).round() as i32).max(1), ((h as f64 * k).round() as i32).max(1))
 }
@@ -231,7 +237,7 @@ impl Drop for Bitmap {
     }
 }
 
-/// Shows an image fitted inside the window, centered, never enlarged.
+/// Shows an image scaled to fill the window (up or down), proportions kept, centered.
 pub struct ImageView {
     bmp: Bitmap,
     orig: (u32, u32),
@@ -251,7 +257,7 @@ impl Viewer for ImageView {
 
     fn paint(&mut self, hdc: HDC, r: &RECT, cx: &Ctx) {
         crate::win::fill(hdc, r, cx.pal.bg);
-        let (w, h) = fit(self.bmp.size(), (r.right - r.left, r.bottom - r.top));
+        let (w, h) = contain(self.bmp.size(), (r.right - r.left, r.bottom - r.top));
         let x = r.left + (r.right - r.left - w) / 2;
         let y = r.top + (r.bottom - r.top - h) / 2;
         self.bmp.draw(hdc, &RECT { left: x, top: y, right: x + w, bottom: y + h }, cx.pal.bg);
@@ -272,6 +278,13 @@ mod tests {
         assert_eq!(fit((1600, 800), (800, 600)), (800, 400));
         assert_eq!(fit((500, 2000), (800, 600)), (150, 600));
         assert_eq!(fit((10000, 1), (100, 100)), (100, 1));
+    }
+
+    #[test]
+    fn contain_enlarges_keeping_proportions() {
+        assert_eq!(contain((100, 50), (800, 600)), (800, 400));
+        assert_eq!(contain((16, 32), (800, 600)), (300, 600));
+        assert_eq!(contain((1600, 800), (800, 600)), (800, 400));
     }
 
     #[test]

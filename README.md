@@ -110,7 +110,8 @@ file operations.
 - Text and source files (with line numbers, long lines wrapped) and images (PNG, JPEG, GIF, BMP,
   TIFF, ICO, WebP…) are rendered, including entries inside zip archives;
   anything else gets an info card with icon, size and dates.
-- Documents open at 80% of the screen; the open button launches the item; the
+- Documents open at 80% of the screen and images at about the same size,
+  scaled up or down to fill it with proportions kept; the open button launches the item; the
   window can be moved and resized and remembers its document size for the
   session.
 
