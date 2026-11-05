@@ -673,7 +673,10 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             if let Some(ch) = char::from_u32(wp.0 as u32) {
                 if ch >= ' ' && !ctrl() && !alt() {
                     with_app(|app| {
-                        if !(ch == ' ' && app.grid_ui.quick_space) {
+                        // ":" can't appear in a file name, so it starts the tab's filter.
+                        if ch == ':' {
+                            begin_path_edit(app, pane, true);
+                        } else if !(ch == ' ' && app.grid_ui.quick_space) {
                             type_search_char(app, pane, ch);
                         }
                     });

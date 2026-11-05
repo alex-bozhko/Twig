@@ -181,6 +181,7 @@ pub mod glyph {
     pub const WARNING: &str = "\u{E7BA}";
     pub const INFO: &str = "\u{E946}";
     pub const HISTORY: &str = "\u{E81C}";
+    pub const HELP: &str = "\u{E897}";
     pub const COPY: &str = "\u{E8C8}";
     pub const MOVE: &str = "\u{E8DE}";
     pub const RENAME: &str = "\u{E8AC}";

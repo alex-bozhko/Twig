@@ -100,6 +100,10 @@ file operations.
   that still exists).
 - Kept across restarts (last 500 entries) in `%LOCALAPPDATA%\Twig\log.json`.
 
+### Keyboard shortcuts
+
+- The `?` button left of the clock (or `F1`) lists every shortcut.
+
 ### Quick Look
 
 - `Space` previews the selected item in a Finder-style pop-up; `Space` or
@@ -139,8 +143,8 @@ file operations.
 
 ### Filter (experimental)
 
-- The filter lives in each tab's breadcrumb bar: press `Ctrl+F` (or type `:`
-  in the path editor) and type, e.g. `:report`, to narrow the tab to rows whose
+- The filter lives in each tab's breadcrumb bar: press `Ctrl+F` or `:` (or
+  type `:` in the path editor) and type, e.g. `:report`, to narrow the tab to rows whose
   names contain the text (case-insensitive), as you type. Only rows already
   shown are searched; collapsed folders are not opened. `::report` also
   searches subfolders (see below).

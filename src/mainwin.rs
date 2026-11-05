@@ -45,6 +45,7 @@ enum Hot {
     Strip(PaneId),
     Gear,
     Log,
+    Help,
 }
 
 struct TabRect {
@@ -85,6 +86,8 @@ pub struct Chrome {
     gear: RECT,
     /// Action log button, left of the gear.
     log: RECT,
+    /// Keyboard shortcuts button, left of the log button.
+    help: RECT,
     panes: Vec<PaneChrome>,
     splitters: Vec<Splitter>,
     hot: Option<Hot>,
@@ -120,6 +123,7 @@ pub fn relayout(app: &mut App) {
     c.status = rc(0, h - sb, w, sb);
     c.gear = rc(w - scale(32, d), h - sb + 1, scale(32, d), sb - 1);
     c.log = rc(w - scale(64, d), h - sb + 1, scale(32, d), sb - 1);
+    c.help = rc(w - scale(96, d), h - sb + 1, scale(32, d), sb - 1);
 
     let area = Rect::new(0, 0, w, h - sb);
     let mut rects = Vec::new();
@@ -217,6 +221,9 @@ fn hit(c: &Chrome, x: i32, y: i32) -> Option<Hot> {
     }
     if pt_in(&c.log, x, y) {
         return Some(Hot::Log);
+    }
+    if pt_in(&c.help, x, y) {
+        return Some(Hot::Help);
     }
     for pc in &c.panes {
         if !pt_in(&pc.strip, x, y) {
@@ -374,7 +381,7 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     unsafe {
         SelectObject(hdc, app.fonts.glyph_mid);
     }
-    for (h, r, g) in [(Hot::Gear, &c.gear, glyph::GEAR), (Hot::Log, &c.log, glyph::HISTORY)] {
+    for (h, r, g) in [(Hot::Gear, &c.gear, glyph::GEAR), (Hot::Log, &c.log, glyph::HISTORY), (Hot::Help, &c.help, glyph::HELP)] {
         if c.hot == Some(h) {
             fill(hdc, r, if c.pressed == Some(h) { pal.sel_inactive } else { pal.hover });
         }
@@ -383,7 +390,7 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     unsafe {
         SelectObject(hdc, app.fonts.ui);
     }
-    sr.right = c.log.left - scale(4, d);
+    sr.right = c.help.left - scale(4, d);
     if !c.summary.is_empty() {
         draw_text(hdc, &c.summary, &sr, pal.text_dim, DT_RIGHT_V);
         sr.right -= text_width(hdc, app.fonts.ui, &c.summary) + scale(24, d);
@@ -502,7 +509,7 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
     with_app(|app| {
         let h = hit(&app.chrome, x, y);
         match h {
-            Some(Hot::TabClose(..)) | Some(Hot::Plus(_)) | Some(Hot::Gear) | Some(Hot::Log) => {
+            Some(Hot::TabClose(..)) | Some(Hot::Plus(_)) | Some(Hot::Gear) | Some(Hot::Log) | Some(Hot::Help) => {
                 app.chrome.pressed = h;
                 unsafe {
                     SetCapture(hwnd);
@@ -622,6 +629,7 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
             }
             Hot::Gear => return Some(Hot::Gear),
             Hot::Log => return Some(Hot::Log),
+            Hot::Help => return Some(Hot::Help),
             _ => {}
         }
         None
@@ -629,8 +637,15 @@ fn on_button_up(hwnd: HWND, x: i32, y: i32) {
     match open.flatten() {
         Some(Hot::Gear) => open_settings(hwnd),
         Some(Hot::Log) => open_log(hwnd),
+        Some(Hot::Help) => open_help(hwnd),
         _ => {}
     }
+}
+
+/// Opens (or focuses) the keyboard shortcuts window.
+fn open_help(hwnd: HWND) {
+    let dark = with_app(|app| app.dark).unwrap_or(false);
+    crate::helpwin::show(hwnd, dark);
 }
 
 /// Opens (or focuses) the action log window.
@@ -1074,6 +1089,10 @@ pub fn handle_shortcut(msg: &MSG) -> bool {
     }
     if msg.hwnd != main && unsafe { !IsChild(main, msg.hwnd).as_bool() } {
         return false;
+    }
+    if msg.wParam.0 as u16 == VK_F1.0 && !ctrl() && !alt() && !shift() {
+        open_help(main);
+        return true;
     }
     if !ctrl() || alt() {
         return false;

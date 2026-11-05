@@ -6,6 +6,7 @@ mod defaultapp;
 mod dragdrop;
 mod fileops;
 mod grid;
+mod helpwin;
 mod instance;
 mod layout;
 mod loader;
