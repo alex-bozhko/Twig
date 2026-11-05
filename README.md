@@ -115,6 +115,9 @@ file operations.
   scaled up or down (bicubic, so small images stay smooth) to fill it with proportions kept; the open button launches the item; the
   window can be moved and resized and remembers its document size for the
   session.
+- Text whose lines all fit is shown in a narrower window sized to the
+  longest line; the text scroll bar widens on hover and can be dragged or
+  clicked to jump.
 
 ### Zip archives
 

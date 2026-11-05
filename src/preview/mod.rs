@@ -56,6 +56,26 @@ pub trait Viewer {
     }
     /// Shown dimmed after the name in the title bar.
     fn subtitle(&self) -> String;
+    /// For documents: the width that shows the content without wrapping, if it has one.
+    fn natural_width(&self, _hdc: HDC, _cx: &Ctx) -> Option<i32> {
+        None
+    }
+    /// The point is on a control of the viewer's (kept clear of the window's resize edge).
+    fn claims(&self, _x: i32, _y: i32) -> bool {
+        false
+    }
+    /// Left button down in the body; true if taken (the mouse is then captured until release).
+    fn press(&mut self, _x: i32, _y: i32) -> bool {
+        false
+    }
+    /// The mouse moved over the body or while captured; true if the view changed.
+    fn hover(&mut self, _x: i32, _y: i32) -> bool {
+        false
+    }
+    /// The capture ended with the mouse at this point (far outside when it left); true if the view changed.
+    fn release(&mut self, _x: i32, _y: i32) -> bool {
+        false
+    }
 }
 
 const CLASS: PCWSTR = w!("TwigPreview");
@@ -73,6 +93,10 @@ const EDGE: i32 = 6;
 const DOC_PERCENT: i32 = 80;
 const CARD_W: i32 = 520;
 const MIN_CONTENT: (i32, i32) = (360, 240);
+/// The narrowest a document is made to fit its lines.
+const MIN_DOC_W: i32 = 480;
+/// The window's resize edge kept beside a viewer's control (scroll bar) on the same side.
+const EDGE_BY_CONTROL: i32 = 2;
 const MONO_PX: i32 = 13;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -96,6 +120,8 @@ struct State {
     shown_target: Target,
     viewer: Box<dyn Viewer>,
     is_doc: bool,
+    /// Width layout narrowed a document to for its lines (the user's document width stands).
+    fitted_w: Option<i32>,
     /// The window has been sized and shown.
     visible: bool,
     hot: Option<Btn>,
@@ -230,7 +256,18 @@ fn work_area(hwnd: HWND) -> RECT {
 /// Sizes the window for its viewer, keeping its center (or centering it on the owner the first
 /// time), and shows it. Must not be called while STATE is borrowed.
 fn layout(hwnd: HWND) {
-    let Some((pref, dpi, visible, owner)) = with_state(|s| (s.viewer.preferred(), s.dpi, s.visible, s.owner)) else { return };
+    let Some((pref, dpi, visible, owner, natural)) = with_state(|s| {
+        let natural = unsafe {
+            let hdc = GetDC(hwnd);
+            let cx = Ctx { pal: &s.pal, fonts: &s.fonts, mono: s.mono, heading: s.heading, dpi: s.dpi };
+            let n = s.viewer.natural_width(hdc, &cx);
+            ReleaseDC(hwnd, hdc);
+            n
+        };
+        (s.viewer.preferred(), s.dpi, s.visible, s.owner, natural)
+    }) else {
+        return;
+    };
     let anchor = if visible { hwnd } else { owner };
     let work = work_area(anchor);
     let (ww, wh) = (work.right - work.left, work.bottom - work.top);
@@ -245,10 +282,12 @@ fn layout(hwnd: HWND) {
             let (fw, fh) = image::contain((w, h), (dw, dh));
             (fw.max(scale(MIN_CONTENT.0, dpi)), fh.max(scale(MIN_CONTENT.1, dpi)))
         }
-        Pref::Doc => (dw, dh),
+        // Narrower when nothing would wrap, so short lines aren't lost in a wide window.
+        Pref::Doc => (natural.map_or(dw, |n| n.max(scale(MIN_DOC_W, dpi)).min(dw)), dh),
         Pref::Card(h) => (scale(CARD_W, dpi), scale(h, dpi)),
     };
     let (w, h) = (cw.min(ww), (ch + th).min(wh));
+    with_state(|s| s.fitted_w = (matches!(pref, Pref::Doc) && cw < dw).then_some(w));
     let mut ar = RECT::default();
     unsafe {
         let _ = GetWindowRect(anchor, &mut ar);
@@ -334,8 +373,13 @@ fn edge_hit(hwnd: HWND, lp: LPARAM) -> LRESULT {
         let _ = ScreenToClient(hwnd, &mut p);
     }
     let r = client_rect(hwnd);
-    let Some((e, th, on_button)) = with_state(|s| (s.s(EDGE), s.title_h(), s.hit(hwnd, p.x, p.y).is_some())) else { return LRESULT(HTCLIENT as isize) };
-    let (l, t, rr, b) = (p.x < e, p.y < e, p.x >= r.right - e, p.y >= r.bottom - e);
+    let Some((e, th, on_button, claimed)) = with_state(|s| {
+        let claimed = p.y >= s.title_h() && p.x < r.right - s.s(EDGE_BY_CONTROL) && s.viewer.claims(p.x, p.y);
+        (s.s(EDGE), s.title_h(), s.hit(hwnd, p.x, p.y).is_some(), claimed)
+    }) else {
+        return LRESULT(HTCLIENT as isize);
+    };
+    let (l, t, rr, b) = (p.x < e, p.y < e, p.x >= r.right - e && !claimed, p.y >= r.bottom - e);
     let ht = match (l, t, rr, b) {
         (true, true, _, _) => HTTOPLEFT,
         (_, true, true, _) => HTTOPRIGHT,
@@ -374,9 +418,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_EXITSIZEMOVE => {
-            if let Some((true, dpi)) = with_state(|s| (s.is_doc, s.dpi)) {
+            if let Some((true, dpi, fitted)) = with_state(|s| (s.is_doc, s.dpi, s.fitted_w)) {
                 let r = client_rect(hwnd);
-                DOC_SIZE.with(|d| d.set(Some(((r.right * 96 / dpi as i32).max(320), (r.bottom * 96 / dpi as i32).max(200)))));
+                // A window narrowed to its lines and resized only in height keeps the document width.
+                let w = match (fitted, DOC_SIZE.with(|d| d.get())) {
+                    (Some(fw), Some((w, _))) if fw == r.right => w,
+                    (Some(fw), None) if fw == r.right => {
+                        let work = work_area(hwnd);
+                        (work.right - work.left) * DOC_PERCENT / 100 * 96 / dpi as i32
+                    }
+                    _ => r.right * 96 / dpi as i32,
+                };
+                DOC_SIZE.with(|d| d.set(Some((w.max(320), (r.bottom * 96 / dpi as i32).max(200)))));
             }
             return LRESULT(0);
         }
@@ -416,8 +469,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_MOUSEMOVE => {
             with_state(|s| {
-                let h = s.hit(hwnd, x_of(lp), y_of(lp));
-                if h != s.hot {
+                let (x, y) = (x_of(lp), y_of(lp));
+                let h = s.hit(hwnd, x, y);
+                let viewer_changed = s.viewer.hover(x, y);
+                if h != s.hot || viewer_changed {
                     s.hot = h;
                     invalidate(hwnd);
                 }
@@ -430,9 +485,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_MOUSELEAVE => {
+            let captured = GetCapture() == hwnd;
             with_state(|s| {
                 s.tracking = false;
-                if s.hot.take().is_some() {
+                let viewer_changed = !captured && s.viewer.release(i32::MIN, i32::MIN);
+                if s.hot.take().is_some() || viewer_changed {
                     invalidate(hwnd);
                 }
             });
@@ -440,8 +497,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
             if with_state(|s| {
-                s.pressed = s.hit(hwnd, x_of(lp), y_of(lp));
-                s.pressed.is_some()
+                let (x, y) = (x_of(lp), y_of(lp));
+                s.pressed = s.hit(hwnd, x, y);
+                s.pressed.is_some() || (y >= s.title_h() && s.viewer.press(x, y))
             }) == Some(true)
             {
                 SetCapture(hwnd);
@@ -463,8 +521,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_CAPTURECHANGED => {
+            let mut p = POINT::default();
+            let _ = GetCursorPos(&mut p);
+            let _ = ScreenToClient(hwnd, &mut p);
             with_state(|s| {
-                if s.pressed.take().is_some() {
+                let viewer_changed = s.viewer.release(p.x, p.y);
+                if s.pressed.take().is_some() || viewer_changed {
                     invalidate(hwnd);
                 }
             });
@@ -568,6 +630,7 @@ fn open(owner: HWND, dark: bool, t: Target) {
             shown_target: t.clone(),
             viewer: Box::new(info::InfoView::loading(&t)),
             is_doc: false,
+            fitted_w: None,
             visible: false,
             hot: None,
             pressed: None,

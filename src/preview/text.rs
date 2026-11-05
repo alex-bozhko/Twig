@@ -3,12 +3,27 @@
 use super::content::TEXT_LIMIT;
 use super::{Ctx, Pref, Viewer};
 use crate::util::{format_count, format_size};
-use crate::win::{draw_text, fill, font_height, scale, text_width, wash, DT_CENTER_V, DT_RIGHT_V};
+use crate::win::{draw_text, fill, font_height, pt_in, scale, text_width, wash, DT_CENTER_V, DT_RIGHT_V};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::*;
 
 const WHEEL_LINES: i32 = 3;
 const SPACE: u16 = b' ' as u16;
+// Scroll bar, in 96-DPI pixels: the strip that takes the mouse, and the thumb's thickness at
+// rest and when the bar is hovered or dragged.
+const BAR_ZONE: i32 = 16;
+const THUMB_THIN: i32 = 4;
+const THUMB_WIDE: i32 = 8;
+const THUMB_MIN: i32 = 24;
+
+/// Scroll bar geometry from the last paint (client coordinates).
+#[derive(Clone, Copy)]
+struct Bar {
+    zone: RECT,
+    /// Thumb offset from the zone's top, and length.
+    pos: i32,
+    len: i32,
+}
 
 /// One displayed row: a slice of a source line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -30,6 +45,10 @@ pub struct TextView {
     // Metrics from the last paint, used for scrolling.
     line_h: i32,
     view_h: i32,
+    bar: Option<Bar>,
+    bar_hot: bool,
+    /// Dragging the thumb: where in it the mouse grabbed.
+    grab: Option<i32>,
 }
 
 /// Splits a line into rows at most `cols` wide, breaking after a space where one follows
@@ -51,7 +70,20 @@ fn wrap(line: &[u16], cols: usize) -> Vec<(usize, usize)> {
 
 impl TextView {
     pub fn new(lines: Vec<Vec<u16>>, truncated: bool, total: u64) -> TextView {
-        TextView { lines, truncated, total, rows: Vec::new(), cols: 0, top: 0, line_h: 16, view_h: 0 }
+        TextView { lines, truncated, total, rows: Vec::new(), cols: 0, top: 0, line_h: 16, view_h: 0, bar: None, bar_hot: false, grab: None }
+    }
+
+    /// Width of the line-number gutter.
+    fn gutter(&self, char_w: i32, pad: i32) -> i32 {
+        let digits = self.lines.len().max(1).to_string().len().max(2) as i32;
+        digits * char_w + 2 * pad
+    }
+
+    /// Scrolls so the thumb's top sits at `pos` along the bar.
+    fn drag_to(&mut self, b: &Bar, pos: i32) {
+        let room = (b.zone.bottom - b.zone.top - b.len).max(1);
+        let pos = pos.clamp(0, room);
+        self.top = ((pos as i64 * self.max_top() as i64 + room as i64 / 2) / room as i64) as usize;
     }
 
     /// Re-wraps for `cols` columns, keeping the top line in view.
@@ -112,8 +144,7 @@ impl Viewer for TextView {
             body.bottom = nr.top;
         }
 
-        let digits = self.lines.len().max(1).to_string().len().max(2) as i32;
-        let gutter = digits * char_w + 2 * pad;
+        let gutter = self.gutter(char_w, pad);
         let text_left = body.left + gutter + pad;
         self.rewrap(((body.right - 2 * pad - text_left) / char_w).max(1) as usize);
         self.view_h = body.bottom - body.top - pad;
@@ -138,18 +169,67 @@ impl Viewer for TextView {
             SelectObject(hdc, old);
         }
 
-        // Thin scroll position indicator.
-        let thick = scale(3, cx.dpi);
+        // Scroll bar: a thin thumb that widens, over a faint track, when hovered or dragged.
         let edge = scale(2, cx.dpi);
         let n = self.rows.len();
         let vis = self.visible_rows();
+        self.bar = None;
         if n > vis {
-            let track = body.bottom - body.top - 2 * edge;
-            let len = ((track as i64 * vis as i64 / n as i64) as i32).max(scale(24, cx.dpi)).min(track);
+            let zone = RECT { left: body.right - scale(BAR_ZONE, cx.dpi), top: body.top + edge, right: body.right, bottom: body.bottom - edge };
+            let track = zone.bottom - zone.top;
+            let len = ((track as i64 * vis as i64 / n as i64) as i32).max(scale(THUMB_MIN, cx.dpi)).min(track);
             let pos = ((track - len) as i64 * self.top as i64 / self.max_top().max(1) as i64) as i32;
-            let x = body.right - edge - thick;
-            wash(hdc, &RECT { left: x, top: body.top + edge + pos, right: x + thick, bottom: body.top + edge + pos + len }, pal.text_dim, 140);
+            let wide = self.bar_hot || self.grab.is_some();
+            let thick = scale(if wide { THUMB_WIDE } else { THUMB_THIN }, cx.dpi);
+            let x = body.right - scale(4, cx.dpi) - thick;
+            if wide {
+                let tr = RECT { left: x - edge, top: zone.top, right: x + thick + edge, bottom: zone.bottom };
+                wash(hdc, &tr, pal.text_dim, 40);
+            }
+            let alpha = if self.grab.is_some() { 230 } else if wide { 190 } else { 140 };
+            wash(hdc, &RECT { left: x, top: zone.top + pos, right: x + thick, bottom: zone.top + pos + len }, pal.text_dim, alpha);
+            self.bar = Some(Bar { zone, pos, len });
         }
+    }
+
+    fn natural_width(&self, hdc: HDC, cx: &Ctx) -> Option<i32> {
+        let pad = scale(8, cx.dpi);
+        let char_w = text_width(hdc, cx.mono, "0").max(1);
+        let longest = self.lines.iter().map(Vec::len).max().unwrap_or(0) as i32;
+        Some(self.gutter(char_w, pad) + pad + longest * char_w + 2 * pad)
+    }
+
+    fn claims(&self, x: i32, y: i32) -> bool {
+        self.bar.is_some_and(|b| pt_in(&b.zone, x, y))
+    }
+
+    fn press(&mut self, x: i32, y: i32) -> bool {
+        let Some(b) = self.bar.filter(|b| pt_in(&b.zone, x, y)) else { return false };
+        let thumb_top = b.zone.top + b.pos;
+        if y < thumb_top || y >= thumb_top + b.len {
+            // Off the thumb: center it on the click, then drag from there.
+            self.drag_to(&b, y - b.zone.top - b.len / 2);
+            self.grab = Some(b.len / 2);
+        } else {
+            self.grab = Some(y - thumb_top);
+        }
+        true
+    }
+
+    fn hover(&mut self, x: i32, y: i32) -> bool {
+        if let (Some(g), Some(b)) = (self.grab, self.bar) {
+            let top = self.top;
+            self.drag_to(&b, y - b.zone.top - g);
+            return top != self.top;
+        }
+        let hot = self.claims(x, y);
+        std::mem::replace(&mut self.bar_hot, hot) != hot
+    }
+
+    fn release(&mut self, x: i32, y: i32) -> bool {
+        let was = (self.grab.take().is_some(), self.bar_hot);
+        self.bar_hot = self.claims(x, y);
+        was != (false, self.bar_hot)
     }
 
     fn wheel(&mut self, delta: i32, horizontal: bool) -> bool {
