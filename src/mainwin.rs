@@ -192,10 +192,12 @@ fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, titles: &[TabLabel])
     let mut tabs = Vec::with_capacity(widths.len());
     for w in widths {
         let rect = RECT { left: x, top, right: x + w, bottom };
-        let cx = rect.right - scale(6, d) - close;
-        // Centered under the active tab's accent bar, where the title visually sits.
+        // Centered under the active tab's accent bar, where the title visually sits,
+        // with the same gap to the tab's right edge as above and below.
         let bar = scale(3, d);
-        let cy = top + bar + (h - bar - close) / 2;
+        let inset = (h - bar - close) / 2;
+        let cx = rect.right - inset - close;
+        let cy = top + bar + inset;
         tabs.push(TabRect { rect, close: rc(cx, cy, close, close) });
         x += w + gap;
     }
