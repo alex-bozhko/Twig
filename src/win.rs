@@ -29,6 +29,8 @@ pub const WM_OPEN_PATH: u32 = WM_APP + 20;
 pub const WM_UPDATE: u32 = WM_APP + 21;
 /// The Quick Look worker finished loading a preview (see `preview`).
 pub const WM_PREVIEW_LOADED: u32 = WM_APP + 22;
+/// A navigation key (wparam) pressed in the filter editor, to move the grid's selection.
+pub const WM_FILTER_KEY: u32 = WM_APP + 23;
 
 static MAIN: AtomicIsize = AtomicIsize::new(0);
 

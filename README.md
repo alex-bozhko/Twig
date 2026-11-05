@@ -14,8 +14,8 @@ file operations.
 
 - Virtualized, custom-drawn tree grid with per-folder expand chevrons; folders
   load in the background and update live as files change on disk.
-- Double-click a folder to re-root the tab on it; double-click the root to go
-  up (a drive root goes back to **This PC**).
+- Double-click (or `Enter`) a folder to re-root the tab on it, or a file to open
+  it; on the root it goes up (a drive root goes back to **This PC**).
 - When zoomed into a folder, the tab shows an open-folder badge and the root row stays
   pinned at the top.
 - A clickable breadcrumb bar sits along the bottom of every pane (just the PC
@@ -77,7 +77,7 @@ file operations.
 - `Ctrl+C` / `Ctrl+X` / `Ctrl+V` clipboard (interoperates with Explorer).
 - `Delete` recycles, `Shift+Delete` deletes permanently; both ask for
   confirmation first.
-- `F2` / `Enter` rename, `Alt+Enter` properties.
+- `F2` rename, `Alt+Enter` properties.
 - **New → Folder / Text Document** in the context menu of a folder, a drive or
   the empty space below the rows (the current folder); `Ctrl+Shift+N` creates
   a folder inside the focused folder (or next to a focused file). The new item
@@ -153,6 +153,8 @@ file operations.
 - Each tab keeps its own filter. While it's set, the breadcrumb bar shows it as
   a chip (click to edit it, × to clear it), the tab shows a funnel in its
   title, and the status bar shows the match/hidden counts.
+- `Up` / `Down` (and `PgUp` / `PgDn`) in the editor move the selection through
+  the results without leaving it.
 - `Enter` or clicking away keeps the filter and closes the editor; `Esc` (in
   the editor or the grid) clears it, as does deleting the `:`. Navigating the
   tab to another folder also clears it.

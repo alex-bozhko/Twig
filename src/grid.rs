@@ -725,6 +725,27 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             with_app(|app| on_path_text_changed(app, lp.0));
             return LRESULT(0);
         }
+        WM_FILTER_KEY => {
+            let d = with_app(|app| {
+                let pe = app.grid_ui.path_edit.as_ref().filter(|pe| pe.edit == lp.0 && pe.filter_mode)?;
+                let pane = pe.pane;
+                let vk = wp.0 as u16;
+                // Typing moves the focus to the first match without selecting it: the first arrow selects it.
+                if matches!(VIRTUAL_KEY(vk), VK_UP | VK_DOWN) {
+                    let tid = active_tid(app, pane)?;
+                    let t = app.tabs.get_mut(&tid)?;
+                    let f = t.focus.filter(|&f| t.tree.get(f).is_some_and(|n| !n.selected));
+                    if let Some(r) = f.and_then(|f| t.row_of(f)) {
+                        move_to(app, tid, r);
+                        return None;
+                    }
+                }
+                on_key(app, pane, vk)
+            })
+            .flatten();
+            run_deferred(hwnd, d);
+            return LRESULT(0);
+        }
         WM_DESTROY => {
             let _ = RevokeDragDrop(hwnd);
         }
@@ -1790,35 +1811,39 @@ fn on_dblclick(app: &mut App, pane: PaneId, x: i32, y: i32) -> Option<Deferred> 
     match hit(app, pane, x, y) {
         Hit::Header(c) => app.sort_by(tid, SortKey::from_column(c)),
         Hit::Row { node, chevron: true, .. } => app.toggle(tid, node),
-        Hit::Row { node, .. } => {
-            let t = app.tabs.get_mut(&tid)?;
-            let n = t.tree.get(node)?;
-            let (kind, path) = (n.kind, n.path.clone());
-            let is_root = t.root_node() == Some(node);
-            match kind {
-                Kind::File => return Some(Deferred::Open(path)),
-                Kind::ZipFile => {
-                    let prev = wait_cursor();
-                    let r = materialize(t, &[node]);
-                    unsafe {
-                        SetCursor(prev);
-                    }
-                    match r {
-                        Ok(p) => return p.into_iter().next().map(Deferred::Open),
-                        Err(e) => app.set_status_error(format!("Extract failed: {e}")),
-                    }
-                }
-                Kind::ZipDir => app.toggle(tid, node),
-                Kind::Dir | Kind::Drive | Kind::Zip => {
-                    if is_root {
-                        go_up(app, tid);
-                    } else {
-                        app.navigate(tid, Some(&path), true);
-                    }
-                }
+        Hit::Row { node, .. } => return activate_node(app, tid, node),
+        _ => {}
+    }
+    None
+}
+
+/// Double-click / Enter on a row: opens a file, enters a folder, or goes up from the root.
+fn activate_node(app: &mut App, tid: TabId, node: NodeId) -> Option<Deferred> {
+    let t = app.tabs.get_mut(&tid)?;
+    let n = t.tree.get(node)?;
+    let (kind, path) = (n.kind, n.path.clone());
+    let is_root = t.root_node() == Some(node);
+    match kind {
+        Kind::File => return Some(Deferred::Open(path)),
+        Kind::ZipFile => {
+            let prev = wait_cursor();
+            let r = materialize(t, &[node]);
+            unsafe {
+                SetCursor(prev);
+            }
+            match r {
+                Ok(p) => return p.into_iter().next().map(Deferred::Open),
+                Err(e) => app.set_status_error(format!("Extract failed: {e}")),
             }
         }
-        _ => {}
+        Kind::ZipDir => app.toggle(tid, node),
+        Kind::Dir | Kind::Drive | Kind::Zip => {
+            if is_root {
+                go_up(app, tid);
+            } else {
+                app.navigate(tid, Some(&path), true);
+            }
+        }
     }
     None
 }
@@ -2088,7 +2113,8 @@ fn on_key(app: &mut App, pane: PaneId, vk: u16) -> Option<Deferred> {
         }
         VK_ESCAPE if crate::preview::is_open() => return Some(Deferred::ClosePreview),
         VK_ESCAPE if !t.filter.is_empty() || t.deep => app.clear_filter(tid),
-        VK_RETURN | VK_F2 => begin_rename(app, pane, focus?),
+        VK_RETURN => return activate_node(app, tid, focus?),
+        VK_F2 => begin_rename(app, pane, focus?),
         VK_F5 => app.refresh_tab(tid),
         VK_BACK if !c && !s => nav_history(app, tid, true),
         VK_DELETE => {
@@ -2397,6 +2423,15 @@ unsafe extern "system" fn path_edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
         }
         WM_KEYDOWN if wp.0 as u16 == VK_ESCAPE.0 => {
             notify(0);
+            return LRESULT(0);
+        }
+        // While filtering, Up/Down/PgUp/PgDn move through the results.
+        WM_KEYDOWN
+            if [VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT].contains(&VIRTUAL_KEY(wp.0 as u16)) && parse_filter(&get_text(hwnd)).is_some() =>
+        {
+            if let Ok(parent) = GetParent(hwnd) {
+                post(parent, WM_FILTER_KEY, wp.0, hwnd_to_isize(hwnd));
+            }
             return LRESULT(0);
         }
         WM_CHAR if wp.0 == 13 || wp.0 == 27 => return LRESULT(0),
