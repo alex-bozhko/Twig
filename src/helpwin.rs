@@ -75,7 +75,7 @@ const RIGHT: &[Section] = &[
         &[
             ("Ctrl+F, :", "Filter this tab"),
             ("::text", "Also search subfolders"),
-            ("Up, Down", "Move through the results"),
+            ("Up, Down", "Move to the results (filter stays on)"),
             ("Alt+S", "Toggle subfolder search"),
             ("Esc", "Clear the filter"),
         ],

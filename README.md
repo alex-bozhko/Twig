@@ -155,7 +155,8 @@ file operations.
   a chip (click to edit it, × to clear it), the tab shows a funnel in its
   title, and the status bar shows the match/hidden counts.
 - `Up` / `Down` (and `PgUp` / `PgDn`) in the editor move the selection through
-  the results without leaving it.
+  the results and hand the keyboard to the list, keeping the filter (so `Space`
+  previews). Press `:` or `Ctrl+F` to get back to the filter text.
 - `Enter` or clicking away keeps the filter and closes the editor; `Esc` (in
   the editor or the grid) clears it, as does deleting the `:`. Navigating the
   tab to another folder also clears it.

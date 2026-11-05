@@ -749,6 +749,10 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             })
             .flatten();
             run_deferred(hwnd, d);
+            // Hand the keyboard to the list (Space previews, etc.); the filter stays applied.
+            if GetFocus() == isize_to_hwnd(lp.0) {
+                let _ = SetFocus(hwnd);
+            }
             return LRESULT(0);
         }
         WM_DESTROY => {
