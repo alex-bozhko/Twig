@@ -365,6 +365,8 @@ pub struct Pane {
     pub grid: isize,
     /// Rows that fit in the grid viewport (updated on layout).
     pub view_rows: usize,
+    /// Column widths in 96-DPI pixels: Name, Modified, Type, Size.
+    pub columns: [i32; 4],
 }
 
 impl Pane {
@@ -451,7 +453,7 @@ impl App {
 
     fn restore_layout(&mut self, e: &LayoutEntry, active: &mut Option<PaneId>) -> Layout {
         match e {
-            LayoutEntry::Leaf { tabs, active: a, is_active } => {
+            LayoutEntry::Leaf { tabs, active: a, is_active, columns } => {
                 let p = self.create_pane();
                 if tabs.is_empty() {
                     self.add_tab(p, &TabEntry::default());
@@ -462,6 +464,9 @@ impl App {
                 }
                 let pane = self.panes.get_mut(&p).unwrap();
                 pane.active = (*a).min(pane.tabs.len() - 1);
+                if let Some(c) = columns {
+                    pane.columns = crate::settings::clamp_columns(*c);
+                }
                 if *is_active {
                     *active = Some(p);
                 }
@@ -486,7 +491,7 @@ impl App {
         self.next_pane += 1;
         let grid = crate::grid::create(self.hwnd, id);
         crate::theme::set_control_theme(grid, self.dark, "DarkMode_Explorer");
-        self.panes.insert(id, Pane { id, tabs: Vec::new(), active: 0, grid: hwnd_to_isize(grid), view_rows: 20 });
+        self.panes.insert(id, Pane { id, tabs: Vec::new(), active: 0, grid: hwnd_to_isize(grid), view_rows: 20, columns: self.settings.columns });
         id
     }
 
@@ -698,14 +703,24 @@ impl App {
             return;
         }
         let new = self.create_pane();
+        self.inherit_columns(new, src);
         self.layout.split(target, new, side);
         self.move_tab(tab, new, 0);
+    }
+
+    fn inherit_columns(&mut self, pane: PaneId, from: PaneId) {
+        if let Some(c) = self.panes.get(&from).map(|p| p.columns) {
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.columns = c;
+            }
+        }
     }
 
     /// Splits `target` with a new This PC tab; focus stays where it was.
     pub fn split_new(&mut self, target: PaneId, side: Side) {
         let keep = self.active_pane;
         let new = self.create_pane();
+        self.inherit_columns(new, target);
         self.layout.split(target, new, side);
         self.add_tab(new, &TabEntry::default());
         crate::mainwin::relayout(self);
@@ -1844,6 +1859,7 @@ impl App {
                     tabs: pane.tabs.iter().filter_map(|t| self.tabs.get(t)).map(|t| t.entry()).collect(),
                     active: pane.active,
                     is_active: *p == self.active_pane,
+                    columns: Some(pane.columns),
                 }
             }
             Layout::Split { horizontal, children, weights } => LayoutEntry::Split {
@@ -1868,12 +1884,6 @@ impl App {
             });
         }
         let _ = self.settings.save();
-    }
-
-    /// Column widths in device pixels.
-    pub fn columns(&self) -> [i32; 4] {
-        let c = self.settings.columns;
-        [scale(c[0], self.dpi), scale(c[1], self.dpi), scale(c[2], self.dpi), scale(c[3], self.dpi)]
     }
 
     pub fn set_dpi(&mut self, dpi: u32) {

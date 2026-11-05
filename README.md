@@ -31,7 +31,8 @@ file operations.
   of the breadcrumb bar, `Alt+←`/`Alt+→`, `Backspace`, or the mouse side
   buttons). Going back restores the previous folder, what was expanded and
   scrolled, and re-selects what was selected.
-- Click a column header to sort, drag header edges to resize.
+- Click a column header to sort, drag header edges to resize. Each pane keeps
+  its own column widths; new panes start with the most recently set widths.
 - Type-to-search jumps to the next matching item in the current folder.
 - The status bar shows the active tab's item count, and the number and total
   size of selected items.
@@ -170,7 +171,7 @@ file operations.
 ### Persistence
 
 - Window placement, pane layout, tabs (root, expanded folders, selection,
-  scroll, sort), column widths and favorites are saved to
+  scroll, sort), per-pane column widths and favorites are saved to
   `%LOCALAPPDATA%\Twig\settings.json`.
 - On first run, settings from the previous .NET version
   (`%LOCALAPPDATA%\FileBrowser\settings.json`) are imported, including the

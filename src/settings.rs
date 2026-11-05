@@ -37,6 +37,9 @@ pub enum LayoutEntry {
         active: usize,
         #[serde(default)]
         is_active: bool,
+        /// The pane's column widths (96-DPI px); None = `Settings::columns`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        columns: Option<[i32; 4]>,
     },
     Split { horizontal: bool, weights: Vec<f64>, children: Vec<LayoutEntry> },
 }
@@ -66,6 +69,10 @@ impl Default for Settings {
     }
 }
 
+pub fn clamp_columns(c: [i32; 4]) -> [i32; 4] {
+    c.map(|w| w.clamp(MIN_COLUMN, 4000))
+}
+
 fn local_app_data() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
 }
@@ -91,9 +98,7 @@ impl Settings {
     }
 
     fn sanitized(mut self) -> Settings {
-        for c in self.columns.iter_mut() {
-            *c = (*c).clamp(MIN_COLUMN, 4000);
-        }
+        self.columns = clamp_columns(self.columns);
         self
     }
 
@@ -172,7 +177,7 @@ fn legacy_leaf(tabs: &[serde_json::Value], active: Option<&serde_json::Value>, i
         return None;
     }
     let active = active.and_then(|a| a.as_u64()).map_or(0, |a| (a as usize).min(tabs.len() - 1));
-    Some(LayoutEntry::Leaf { tabs, active, is_active })
+    Some(LayoutEntry::Leaf { tabs, active, is_active, columns: None })
 }
 
 fn legacy_layout(v: &serde_json::Value) -> Option<LayoutEntry> {
@@ -212,11 +217,12 @@ mod tests {
                 horizontal: true,
                 weights: vec![1.0, 2.0],
                 children: vec![
-                    LayoutEntry::Leaf { tabs: vec![TabEntry::default()], active: 0, is_active: true },
+                    LayoutEntry::Leaf { tabs: vec![TabEntry::default()], active: 0, is_active: true, columns: None },
                     LayoutEntry::Leaf {
                         tabs: vec![TabEntry { root: Some("C:\\".into()), expanded: vec!["C:\\a".into()], selected: None, scroll: 5, sort: SortKey::Type, desc: false }],
                         active: 0,
                         is_active: false,
+                        columns: Some([90, 80, 70, 60]),
                     },
                 ],
             }),

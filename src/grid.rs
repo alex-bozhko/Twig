@@ -127,7 +127,6 @@ pub struct Metrics {
     icon: i32,
     gap: i32,
     pad: i32,
-    cols: [i32; 4],
 }
 
 pub fn metrics(app: &App) -> Metrics {
@@ -140,14 +139,20 @@ pub fn metrics(app: &App) -> Metrics {
         icon: scale(16, d),
         gap: scale(6, d),
         pad: scale(6, d),
-        cols: app.columns(),
     }
 }
 
+/// `pane`'s column widths at 96 DPI.
+fn pane_columns(app: &App, pane: PaneId) -> [i32; 4] {
+    app.panes.get(&pane).map_or(app.settings.columns, |p| p.columns)
+}
+
+/// `pane`'s column widths in device pixels.
+fn pane_cols(app: &App, pane: PaneId) -> [i32; 4] {
+    pane_columns(app, pane).map(|c| scale(c, app.dpi))
+}
+
 impl Metrics {
-    fn total(&self) -> i32 {
-        self.cols.iter().sum()
-    }
     /// Left edge of the chevron for a node at `depth`.
     fn chevron_x(&self, scroll_x: i32, depth: u16) -> i32 {
         -scroll_x + self.pad + depth as i32 * self.indent
@@ -762,6 +767,7 @@ pub fn sync(app: &mut App, pane: PaneId) {
     let hwnd = p.grid();
     let tid = p.active_tab();
     let m = metrics(app);
+    let cols = pane_cols(app, pane);
     let r = client_rect(hwnd);
     let (w, h) = (r.right - r.left, r.bottom - r.top);
     let (n, top, sx, pin, view) = match tid.and_then(|t| app.tabs.get_mut(&t)) {
@@ -771,7 +777,7 @@ pub fn sync(app: &mut App, pane: PaneId) {
             let view = ((geo.crumb_top(h) - geo.scroll_y) / m.row).max(1) as usize;
             let n = if t.error.is_some() { 0 } else { t.rows.len() };
             t.top = t.top.min(n.saturating_sub(view)).max(geo.pin);
-            t.scroll_x = t.scroll_x.clamp(0, (m.total() - w).max(0));
+            t.scroll_x = t.scroll_x.clamp(0, (cols.iter().sum::<i32>() - w).max(0));
             (n, t.top, t.scroll_x, geo.pin, view)
         }
         None => (0, 0, 0, 0, ((h - 2 * m.header) / m.row).max(1) as usize),
@@ -790,7 +796,7 @@ pub fn sync(app: &mut App, pane: PaneId) {
             nTrackPos: 0,
         };
         SetScrollInfo(hwnd, SB_VERT, &si, true);
-        si.nMax = (m.total() - 1).max(0);
+        si.nMax = (cols.iter().sum::<i32>() - 1).max(0);
         si.nPage = w.max(0) as u32;
         si.nPos = sx;
         SetScrollInfo(hwnd, SB_HORZ, &si, true);
@@ -901,6 +907,7 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
     let m = metrics(app);
     let slop = scale(4, app.dpi);
     let Some(tid) = active_tid(app, pane) else { return Hit::Nothing };
+    let cols = pane_cols(app, pane);
     let Some(t) = app.tabs.get_mut(&tid) else { return Hit::Nothing };
     t.ensure_rows();
     let geo = Geo::of(&m, t);
@@ -938,14 +945,14 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
     }
     if y < geo.body {
         let mut edge = -t.scroll_x;
-        for (c, w) in m.cols.iter().enumerate() {
+        for (c, w) in cols.iter().enumerate() {
             edge += w;
             if (x - edge).abs() <= slop {
                 return Hit::Divider(c);
             }
         }
         let mut x0 = -t.scroll_x;
-        for (c, w) in m.cols.iter().enumerate() {
+        for (c, w) in cols.iter().enumerate() {
             if x >= x0 && x < x0 + w {
                 return Hit::Header(c);
             }
@@ -1020,6 +1027,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let drop = app.grid_ui.drop.filter(|d| d.0 == pane).map(|d| d.1);
     let renaming = app.grid_ui.rename.as_ref().filter(|rn| rn.tab == tid).map(|rn| rn.node);
     let view = app.panes[&pane].view_rows;
+    let cols = pane_cols(app, pane);
     let cut = app.cut.as_ref().map(|(_, set)| set);
     let bar_hover = app.grid_ui.bar_hover.filter(|h| h.0 == pane).map(|h| h.1);
     let (crumbs, extras) = bar_layout(app, pane, hdc, r.right, r.bottom);
@@ -1041,7 +1049,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let mut x0 = -sx;
     let sort_col = t.tree.sort.column();
     for (c, title) in TITLES.iter().enumerate() {
-        let cw = m.cols[c];
+        let cw = cols[c];
         let right = c == 3;
         let flags = if right { DT_RIGHT_V } else { DT_LEFT_V };
         let sorted = c == sort_col;
@@ -1124,7 +1132,7 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
         // Name cell, clipped to the column.
         unsafe {
             SaveDC(hdc);
-            IntersectClipRect(hdc, -sx, y, -sx + m.cols[0] - m.pad / 2, y + m.row);
+            IntersectClipRect(hdc, -sx, y, -sx + cols[0] - m.pad / 2, y + m.row);
         }
         if n.expandable() {
             let open = n.expanded || t.filtered.opened.contains(&id);
@@ -1152,23 +1160,23 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
                     wash(hdc, &rc(hx, y + m.row / 6, hw, m.row - m.row / 3), pal.accent, 90);
                 }
             }
-            draw_text(hdc, &n.name, &rc(tx, y, -sx + m.cols[0] - m.pad - tx, m.row), color, DT_LEFT_V);
+            draw_text(hdc, &n.name, &rc(tx, y, -sx + cols[0] - m.pad - tx, m.row), color, DT_LEFT_V);
         }
         unsafe {
             let _ = RestoreDC(hdc, -1);
         }
 
         // Other columns.
-        let mut cx = -sx + m.cols[0];
+        let mut cx = -sx + cols[0];
         if n.kind != Kind::Drive {
-            draw_text(hdc, &format_time(n.modified), &rc(cx + m.pad, y, m.cols[1] - 2 * m.pad, m.row), color, DT_LEFT_V);
+            draw_text(hdc, &format_time(n.modified), &rc(cx + m.pad, y, cols[1] - 2 * m.pad, m.row), color, DT_LEFT_V);
         }
-        cx += m.cols[1];
-        draw_text(hdc, &n.type_name, &rc(cx + m.pad, y, m.cols[2] - 2 * m.pad, m.row), color, DT_LEFT_V);
-        cx += m.cols[2];
+        cx += cols[1];
+        draw_text(hdc, &n.type_name, &rc(cx + m.pad, y, cols[2] - 2 * m.pad, m.row), color, DT_LEFT_V);
+        cx += cols[2];
         let size = size_text(n);
         if !size.is_empty() {
-            draw_text(hdc, &size, &rc(cx + m.pad, y, m.cols[3] - 2 * m.pad, m.row), color, DT_RIGHT_V);
+            draw_text(hdc, &size, &rc(cx + m.pad, y, cols[3] - 2 * m.pad, m.row), color, DT_RIGHT_V);
         }
     }
     draw_crumb_bar(hdc, &bar, &pal);
@@ -1495,7 +1503,7 @@ fn on_lbutton(app: &mut App, pane: PaneId, x: i32, y: i32) -> bool {
             false
         }
         Hit::Divider(c) => {
-            app.grid_ui.col_drag = Some((pane, c, x, app.settings.columns[c]));
+            app.grid_ui.col_drag = Some((pane, c, x, pane_columns(app, pane)[c]));
             true
         }
         Hit::Header(c) => {
@@ -1562,12 +1570,11 @@ fn on_move(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, y: i32) -> Option<De
     if let Some((p, c, sx, sw)) = app.grid_ui.col_drag {
         if p == pane {
             let w = (sw + (x - sx) * 96 / app.dpi as i32).clamp(crate::settings::MIN_COLUMN, 4000);
-            if app.settings.columns[c] != w {
-                app.settings.columns[c] = w;
-                let panes: Vec<PaneId> = app.panes.keys().copied().collect();
-                for p in panes {
-                    sync(app, p);
-                }
+            if let Some(pn) = app.panes.get_mut(&pane).filter(|pn| pn.columns[c] != w) {
+                pn.columns[c] = w;
+                // New panes start with the most recently set widths.
+                app.settings.columns = pn.columns;
+                sync(app, pane);
             }
         }
         return None;
@@ -1661,16 +1668,17 @@ fn truncated_cell(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, row: usize, n
         return None;
     }
     let m = metrics(app);
+    let cols = pane_cols(app, pane);
     let (font, line) = (app.fonts.ui, app.fonts.ui_height);
     let t = app.tabs.get(&active_tid(app, pane)?)?;
     let geo = Geo::of(&m, t);
     let y = geo.row_y(row, t.top)?;
     let n = t.tree.get(node)?;
     let mut x0 = -t.scroll_x;
-    let col = (0..m.cols.len()).find(|&c| {
-        let inside = x >= x0 && x < x0 + m.cols[c];
+    let col = (0..cols.len()).find(|&c| {
+        let inside = x >= x0 && x < x0 + cols[c];
         if !inside {
-            x0 += m.cols[c];
+            x0 += cols[c];
         }
         inside
     })?;
@@ -1681,7 +1689,7 @@ fn truncated_cell(app: &mut App, pane: PaneId, hwnd: HWND, x: i32, row: usize, n
         3 => (size_text(n), x0 + m.pad),
         _ => return None,
     };
-    let right = (x0 + m.cols[col] - m.pad).min(client_rect(hwnd).right);
+    let right = (x0 + cols[col] - m.pad).min(client_rect(hwnd).right);
     if text.is_empty() {
         return None;
     }
@@ -2529,6 +2537,7 @@ fn place_rename(app: &mut App) {
     let Some(rn) = &app.grid_ui.rename else { return };
     let (edit, pane, tid, node) = (isize_to_hwnd(rn.edit), rn.pane, rn.tab, rn.node);
     let m = metrics(app);
+    let cols = pane_cols(app, pane);
     let shown = active_tid(app, pane) == Some(tid);
     let view = app.panes.get(&pane).map_or(0, |p| p.view_rows);
     let place = app.tabs.get_mut(&tid).filter(|_| shown).and_then(|t| {
@@ -2541,7 +2550,7 @@ fn place_rename(app: &mut App) {
         let depth = t.tree.get(node)?.depth;
         // Text lines up with the label: 1px border + the edit's left margin.
         let x = m.text_x(t.scroll_x, depth) - rename_margin(app.dpi) - 1;
-        let right = -t.scroll_x + m.cols[0];
+        let right = -t.scroll_x + cols[0];
         let y = geo.row_y(r, t.top)?;
         Some((x, y, (right - x).max(scale(80, app.dpi))))
     });
