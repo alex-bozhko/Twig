@@ -144,36 +144,60 @@ pub fn contain(img: (i32, i32), max: (i32, i32)) -> (i32, i32) {
     (((w as f64 * k).round() as i32).max(1), ((h as f64 * k).round() as i32).max(1))
 }
 
-/// Pixels as a GDI bitmap, alpha composited over a background color.
+/// `px` resampled to `w`×`h` (bicubic when enlarging, Fant when shrinking).
+fn resample(px: &Pixels, w: u32, h: u32) -> Option<Vec<u8>> {
+    unsafe {
+        let f = factory().ok()?;
+        let src = f.CreateBitmapFromMemory(px.w, px.h, &GUID_WICPixelFormat32bppPBGRA, px.w * 4, &px.data).ok()?;
+        let mode = if w > px.w || h > px.h { WICBitmapInterpolationModeHighQualityCubic } else { WICBitmapInterpolationModeFant };
+        let s = f.CreateBitmapScaler().ok()?;
+        s.Initialize(&src, w, h, mode).ok()?;
+        let mut out = vec![0u8; (w * h * 4) as usize];
+        s.CopyPixels(std::ptr::null(), w * 4, &mut out).ok()?;
+        Some(out)
+    }
+}
+
+/// Pixels as a GDI bitmap, resampled to the display size and alpha composited over a background color.
 pub struct Bitmap {
     px: Pixels,
     hbmp: HBITMAP,
-    bg: Option<u32>,
+    /// What `hbmp` holds: background color and pixel size.
+    key: Option<(u32, i32, i32)>,
 }
 
 impl Bitmap {
     pub fn new(px: Pixels) -> Bitmap {
-        Bitmap { px, hbmp: HBITMAP::default(), bg: None }
+        Bitmap { px, hbmp: HBITMAP::default(), key: None }
     }
 
     pub fn size(&self) -> (i32, i32) {
         (self.px.w as i32, self.px.h as i32)
     }
 
-    fn ensure(&mut self, bg: windows::Win32::Foundation::COLORREF) {
-        if self.bg == Some(bg.0) && !self.hbmp.is_invalid() {
-            return;
+    /// Prepares `hbmp` at `w`×`h` (or at the source size if resampling fails); returns its size.
+    fn ensure(&mut self, bg: windows::Win32::Foundation::COLORREF, w: i32, h: i32) -> Option<(i32, i32)> {
+        if let Some((b, kw, kh)) = self.key {
+            if b == bg.0 && (kw, kh) == (w, h) && !self.hbmp.is_invalid() {
+                return Some((kw, kh));
+            }
         }
+        let scaled = if (w, h) != self.size() && w > 0 && h > 0 { resample(&self.px, w as u32, h as u32) } else { None };
+        let (bw, bh, data) = match &scaled {
+            Some(d) => (w, h, d.as_slice()),
+            None => (self.px.w as i32, self.px.h as i32, self.px.data.as_slice()),
+        };
         unsafe {
             if !self.hbmp.is_invalid() {
                 let _ = DeleteObject(self.hbmp);
                 self.hbmp = HBITMAP::default();
             }
+            self.key = None;
             let bi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: self.px.w as i32,
-                    biHeight: -(self.px.h as i32),
+                    biWidth: bw,
+                    biHeight: -bh,
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB.0,
@@ -182,37 +206,35 @@ impl Bitmap {
                 ..Default::default()
             };
             let mut bits = std::ptr::null_mut();
-            let Ok(h) = CreateDIBSection(HDC::default(), &bi, DIB_RGB_COLORS, &mut bits, HANDLE::default(), 0) else { return };
+            let Ok(hb) = CreateDIBSection(HDC::default(), &bi, DIB_RGB_COLORS, &mut bits, HANDLE::default(), 0) else { return None };
             if bits.is_null() {
-                let _ = DeleteObject(h);
-                return;
+                let _ = DeleteObject(hb);
+                return None;
             }
-            let out = std::slice::from_raw_parts_mut(bits as *mut u8, self.px.data.len());
+            let out = std::slice::from_raw_parts_mut(bits as *mut u8, data.len());
             // COLORREF is 0x00BBGGRR; pixels are B, G, R, A.
             let back = [(bg.0 >> 16) as u8 as u32, (bg.0 >> 8) as u8 as u32, bg.0 as u8 as u32];
-            for (o, p) in out.chunks_exact_mut(4).zip(self.px.data.chunks_exact(4)) {
+            for (o, p) in out.chunks_exact_mut(4).zip(data.chunks_exact(4)) {
                 let inv = 255 - p[3] as u32;
                 for c in 0..3 {
                     o[c] = (p[c] as u32 + (back[c] * inv + 127) / 255).min(255) as u8;
                 }
                 o[3] = 255;
             }
-            self.hbmp = h;
-            self.bg = Some(bg.0);
+            self.hbmp = hb;
         }
+        // A failed resample is cached under the requested size too, so it isn't retried every paint.
+        self.key = Some((bg.0, w, h));
+        Some((bw, bh))
     }
 
     /// Draws the bitmap scaled into `dst`.
     pub fn draw(&mut self, hdc: HDC, dst: &RECT, bg: windows::Win32::Foundation::COLORREF) {
-        self.ensure(bg);
-        if self.hbmp.is_invalid() {
-            return;
-        }
+        let (dw, dh) = (dst.right - dst.left, dst.bottom - dst.top);
+        let Some((sw, sh)) = self.ensure(bg, dw, dh) else { return };
         unsafe {
             let mem = CreateCompatibleDC(hdc);
             let old = SelectObject(mem, self.hbmp);
-            let (dw, dh) = (dst.right - dst.left, dst.bottom - dst.top);
-            let (sw, sh) = self.size();
             if dw == sw && dh == sh {
                 let _ = BitBlt(hdc, dst.left, dst.top, dw, dh, mem, 0, 0, SRCCOPY);
             } else {
