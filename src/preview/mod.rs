@@ -21,7 +21,7 @@ use content::Payload;
 use std::cell::{Cell, RefCell};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Dwm::{DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
+use windows::Win32::Graphics::Dwm::{DwmExtendFrameIntoClientArea, DwmFlush, DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -62,6 +62,9 @@ const CLASS: PCWSTR = w!("TwigPreview");
 const TIMER_PLACEHOLDER: usize = 1;
 /// A load slower than this shows the placeholder card meanwhile.
 const PLACEHOLDER_MS: u32 = 250;
+/// The same once the preview is shown: the previous item stays up meanwhile, which beats a
+/// flash of the placeholder while arrowing through quick-loading files.
+const FOLLOW_PLACEHOLDER_MS: u32 = 600;
 // Layout, in 96-DPI pixels.
 const TITLE_H: i32 = 44;
 const BUTTON_W: i32 = 40;
@@ -254,13 +257,42 @@ fn layout(hwnd: HWND) {
     let x = (cx - w / 2).clamp(work.left, work.right - w);
     let y = (cy - h / 2).clamp(work.top, work.bottom - h);
     unsafe {
-        let _ = SetWindowPos(hwnd, HWND::default(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
         if !visible {
+            let _ = SetWindowPos(hwnd, HWND::default(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
             let _ = ShowWindow(hwnd, SW_SHOWNA);
+            with_state(|s| s.visible = true);
+            let _ = UpdateWindow(hwnd);
+        } else if (ar.left, ar.top, ar.right - ar.left, ar.bottom - ar.top) == (x, y, w, h) {
+            invalidate(hwnd);
+        } else {
+            resize_painted(hwnd, x, y, w, h);
         }
     }
-    with_state(|s| s.visible = true);
-    invalidate(hwnd);
+}
+
+/// Moves and resizes the shown window with its new frame painted beforehand and put on screen
+/// straight after, so the old content is never seen stretched, shifted or cut at the new size.
+unsafe fn resize_painted(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
+    let wdc = GetDC(hwnd);
+    let mem = CreateCompatibleDC(wdc);
+    let bmp = CreateCompatibleBitmap(wdc, w, h);
+    ReleaseDC(hwnd, wdc);
+    let old = SelectObject(mem, bmp);
+    let painted = with_state(|s| paint(s, hwnd, mem, &RECT { left: 0, top: 0, right: w, bottom: h })).is_some();
+    // Start right after a composition, so the resize and the blit land in the same frame.
+    let _ = DwmFlush();
+    let _ = SetWindowPos(hwnd, HWND::default(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOREDRAW);
+    if painted {
+        let wdc = GetDC(hwnd);
+        let _ = BitBlt(wdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+        ReleaseDC(hwnd, wdc);
+        let _ = ValidateRect(hwnd, None);
+    } else {
+        invalidate(hwnd);
+    }
+    SelectObject(mem, old);
+    let _ = DeleteObject(bmp);
+    let _ = DeleteDC(mem);
 }
 
 fn set_dpi(s: &mut State, dpi: u32) {
@@ -368,11 +400,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_TIMER if wp.0 == TIMER_PLACEHOLDER => {
             let _ = KillTimer(hwnd, TIMER_PLACEHOLDER);
-            with_state(|s| {
+            let visible = with_state(|s| {
                 let t = s.want.clone();
                 s.set_viewer(Box::new(info::InfoView::loading(&t)), t);
+                s.visible
             });
-            layout(hwnd);
+            // A shown window keeps its size for the placeholder, so a slow item doesn't shrink it
+            // to a card only to grow it back a moment later.
+            if visible == Some(true) {
+                invalidate(hwnd);
+            } else {
+                layout(hwnd);
+            }
             return LRESULT(0);
         }
         WM_MOUSEMOVE => {
@@ -556,7 +595,7 @@ pub fn follow(target: Option<Target>) {
         s.want = t.clone();
         s.gen = content::request(t, s.hwnd);
         unsafe {
-            SetTimer(s.hwnd, TIMER_PLACEHOLDER, PLACEHOLDER_MS, None);
+            SetTimer(s.hwnd, TIMER_PLACEHOLDER, FOLLOW_PLACEHOLDER_MS, None);
         }
     });
 }
