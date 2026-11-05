@@ -37,8 +37,6 @@ pub enum LayoutEntry {
         active: usize,
         #[serde(default)]
         is_active: bool,
-        #[serde(default)]
-        maximized: bool,
     },
     Split { horizontal: bool, weights: Vec<f64>, children: Vec<LayoutEntry> },
 }
@@ -174,7 +172,7 @@ fn legacy_leaf(tabs: &[serde_json::Value], active: Option<&serde_json::Value>, i
         return None;
     }
     let active = active.and_then(|a| a.as_u64()).map_or(0, |a| (a as usize).min(tabs.len() - 1));
-    Some(LayoutEntry::Leaf { tabs, active, is_active, maximized: false })
+    Some(LayoutEntry::Leaf { tabs, active, is_active })
 }
 
 fn legacy_layout(v: &serde_json::Value) -> Option<LayoutEntry> {
@@ -214,12 +212,11 @@ mod tests {
                 horizontal: true,
                 weights: vec![1.0, 2.0],
                 children: vec![
-                    LayoutEntry::Leaf { tabs: vec![TabEntry::default()], active: 0, is_active: true, maximized: false },
+                    LayoutEntry::Leaf { tabs: vec![TabEntry::default()], active: 0, is_active: true },
                     LayoutEntry::Leaf {
                         tabs: vec![TabEntry { root: Some("C:\\".into()), expanded: vec!["C:\\a".into()], selected: None, scroll: 5, sort: SortKey::Type, desc: false }],
                         active: 0,
                         is_active: false,
-                        maximized: false,
                     },
                 ],
             }),

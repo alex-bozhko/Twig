@@ -128,10 +128,7 @@ pub fn relayout(app: &mut App) {
     let area = Rect::new(0, 0, w, h - sb);
     let mut rects = Vec::new();
     let mut splitters = Vec::new();
-    match app.maximized.filter(|p| app.panes.contains_key(p)) {
-        Some(p) => rects.push((p, area)),
-        None => app.layout.arrange(area, scale(SPLIT, d), &mut rects, &mut splitters),
-    }
+    app.layout.arrange(area, scale(SPLIT, d), &mut rects, &mut splitters);
     app.chrome.splitters = splitters;
 
     let strip_h = scale(STRIP, d);
@@ -505,7 +502,7 @@ enum Deferred {
     TabMenu(TabId, POINT),
 }
 
-fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
+fn on_button_down(hwnd: HWND, x: i32, y: i32) {
     with_app(|app| {
         let h = hit(&app.chrome, x, y);
         match h {
@@ -518,9 +515,7 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
             }
             Some(Hot::Tab(p, i)) => {
                 app.activate_tab(p, i);
-                if dbl {
-                    app.toggle_maximize(p);
-                } else if let Some(tab) = app.panes.get(&p).and_then(|pp| pp.tabs.get(i).copied()) {
+                if let Some(tab) = app.panes.get(&p).and_then(|pp| pp.tabs.get(i).copied()) {
                     app.chrome.tab_drag = Some(TabDrag { tab, start: POINT { x, y }, active: false, spot: None });
                     unsafe {
                         SetCapture(hwnd);
@@ -536,13 +531,7 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32, dbl: bool) {
                 }
                 invalidate(hwnd);
             }
-            Some(Hot::Strip(p)) => {
-                if dbl {
-                    app.toggle_maximize(p);
-                } else {
-                    app.activate_pane(p);
-                }
-            }
+            Some(Hot::Strip(p)) => app.activate_pane(p),
             None => {}
         }
     });
@@ -711,17 +700,16 @@ const TAB_CLOSE_LEFT: u32 = 3;
 const TAB_CLOSE_RIGHT: u32 = 4;
 const TAB_SPLIT_RIGHT: u32 = 5;
 const TAB_SPLIT_DOWN: u32 = 6;
-const TAB_MAXIMIZE: u32 = 7;
 
 fn tab_menu(hwnd: HWND, tab: TabId, pt: POINT) {
     let info = with_app(|app| {
         let p = app.pane_of_tab(tab)?;
         let pane = app.panes.get(&p)?;
         let idx = pane.tabs.iter().position(|&t| t == tab)?;
-        Some((idx, pane.tabs.len(), app.panes.len(), app.maximized == Some(p)))
+        Some((idx, pane.tabs.len()))
     })
     .flatten();
-    let Some((idx, n, npanes, maxed)) = info else { return };
+    let Some((idx, n)) = info else { return };
     let cmd = unsafe {
         let Ok(m) = CreatePopupMenu() else { return };
         append_menu(m, TAB_CLOSE as usize, "Close\tCtrl+W", true);
@@ -731,7 +719,6 @@ fn tab_menu(hwnd: HWND, tab: TabId, pt: POINT) {
         append_sep(m);
         append_menu(m, TAB_SPLIT_RIGHT as usize, "Split right", true);
         append_menu(m, TAB_SPLIT_DOWN as usize, "Split down", true);
-        append_menu(m, TAB_MAXIMIZE as usize, if maxed { "Restore pane" } else { "Maximize pane" }, npanes > 1);
         let cmd = track_menu(m, hwnd, pt, TRACK_POPUP_MENU_FLAGS(0));
         let _ = DestroyMenu(m);
         cmd
@@ -748,7 +735,6 @@ fn tab_menu(hwnd: HWND, tab: TabId, pt: POINT) {
             TAB_CLOSE_RIGHT => close(app, &tabs[idx + 1..]),
             TAB_SPLIT_RIGHT => app.split_new(p, Side::Right),
             TAB_SPLIT_DOWN => app.split_new(p, Side::Bottom),
-            TAB_MAXIMIZE => app.toggle_maximize(p),
             _ => {}
         }
     });
@@ -893,7 +879,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
-            on_button_down(hwnd, x_of(lp), y_of(lp), msg == WM_LBUTTONDBLCLK);
+            on_button_down(hwnd, x_of(lp), y_of(lp));
             return LRESULT(0);
         }
         WM_MOUSEMOVE => {

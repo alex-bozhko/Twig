@@ -45,10 +45,8 @@ file operations.
 - `Ctrl+T` new tab, `Ctrl+W` close, `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle.
 - Drag a tab onto another pane's strip to move it, or onto a pane edge to
   dock it into a new split.
-- Double-click a tab (or the empty tab strip) to maximize that pane; again
-  to restore.
 - Tab context menu: Close, Close Others, Close to the Left / Right,
-  Split Right, Split Down, Maximize / Restore pane.
+  Split Right, Split Down.
 
 ### Command line
 

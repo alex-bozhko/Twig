@@ -391,7 +391,6 @@ pub struct App {
     pub tabs: HashMap<TabId, Tab>,
     pub layout: Layout,
     pub active_pane: PaneId,
-    pub maximized: Option<PaneId>,
     pub settings: Settings,
     pub undo: Vec<UndoEntry>,
     pub status: String,
@@ -421,7 +420,6 @@ impl App {
             tabs: HashMap::new(),
             layout: Layout::Leaf(0),
             active_pane: 0,
-            maximized: None,
             settings,
             undo: Vec::new(),
             status: String::new(),
@@ -438,9 +436,8 @@ impl App {
         });
         let saved = app.settings.layout.clone();
         let mut active = None;
-        let mut maximized = None;
         let layout = match saved {
-            Some(entry) => app.restore_layout(&entry, &mut active, &mut maximized),
+            Some(entry) => app.restore_layout(&entry, &mut active),
             None => {
                 let p = app.create_pane();
                 app.add_tab(p, &TabEntry::default());
@@ -449,13 +446,12 @@ impl App {
         };
         app.layout = layout;
         app.active_pane = active.unwrap_or_else(|| app.layout.panes()[0]);
-        app.maximized = maximized;
         app
     }
 
-    fn restore_layout(&mut self, e: &LayoutEntry, active: &mut Option<PaneId>, maximized: &mut Option<PaneId>) -> Layout {
+    fn restore_layout(&mut self, e: &LayoutEntry, active: &mut Option<PaneId>) -> Layout {
         match e {
-            LayoutEntry::Leaf { tabs, active: a, is_active, maximized: m } => {
+            LayoutEntry::Leaf { tabs, active: a, is_active } => {
                 let p = self.create_pane();
                 if tabs.is_empty() {
                     self.add_tab(p, &TabEntry::default());
@@ -469,13 +465,10 @@ impl App {
                 if *is_active {
                     *active = Some(p);
                 }
-                if *m {
-                    *maximized = Some(p);
-                }
                 Layout::Leaf(p)
             }
             LayoutEntry::Split { horizontal, weights, children } => {
-                let kids: Vec<Layout> = children.iter().map(|c| self.restore_layout(c, active, maximized)).collect();
+                let kids: Vec<Layout> = children.iter().map(|c| self.restore_layout(c, active)).collect();
                 if kids.len() == 1 {
                     return kids.into_iter().next().unwrap();
                 }
@@ -663,9 +656,6 @@ impl App {
                 let _ = DestroyWindow(p.grid());
             }
         }
-        if self.maximized == Some(pane) {
-            self.maximized = None;
-        }
         if self.active_pane == pane {
             let next = self.layout.panes()[0];
             let idx = self.panes[&next].active;
@@ -709,7 +699,6 @@ impl App {
         }
         let new = self.create_pane();
         self.layout.split(target, new, side);
-        self.maximized = None;
         self.move_tab(tab, new, 0);
     }
 
@@ -718,17 +707,11 @@ impl App {
         let keep = self.active_pane;
         let new = self.create_pane();
         self.layout.split(target, new, side);
-        self.maximized = None;
         self.add_tab(new, &TabEntry::default());
         crate::mainwin::relayout(self);
         crate::grid::sync(self, new);
         let idx = self.panes[&keep].active;
         self.activate_tab(keep, idx);
-    }
-
-    pub fn toggle_maximize(&mut self, pane: PaneId) {
-        self.maximized = if self.maximized == Some(pane) || self.panes.len() < 2 { None } else { Some(pane) };
-        crate::mainwin::relayout(self);
     }
 
     // ---------- Navigation ----------
@@ -1861,7 +1844,6 @@ impl App {
                     tabs: pane.tabs.iter().filter_map(|t| self.tabs.get(t)).map(|t| t.entry()).collect(),
                     active: pane.active,
                     is_active: *p == self.active_pane,
-                    maximized: self.maximized == Some(*p),
                 }
             }
             Layout::Split { horizontal, children, weights } => LayoutEntry::Split {

@@ -52,7 +52,6 @@ const LEFT: &[Section] = &[
             ("Ctrl+W, middle-click", "Close tab"),
             ("Ctrl+Tab", "Next tab"),
             ("Ctrl+Shift+Tab", "Previous tab"),
-            ("Double-click a tab", "Maximize / restore the pane"),
         ],
     ),
 ];
