@@ -87,6 +87,8 @@ pub struct GridUi {
     col_drag: Option<(PaneId, usize, i32, i32)>,
     /// Right-click target: Some(false) = items, Some(true) = background, None = no menu.
     ctx_background: Option<bool>,
+    /// The right-click hit the column header: show the column menu.
+    ctx_columns: bool,
     wheel: i32,
     hwheel: i32,
     /// Truncated cell under the mouse and the in-place tooltip showing its full text.
@@ -147,9 +149,10 @@ fn pane_columns(app: &App, pane: PaneId) -> [i32; 4] {
     app.panes.get(&pane).map_or(app.settings.columns, |p| p.columns)
 }
 
-/// `pane`'s column widths in device pixels.
+/// `pane`'s column widths in device pixels; hidden columns of its active tab are 0 wide.
 fn pane_cols(app: &App, pane: PaneId) -> [i32; 4] {
-    pane_columns(app, pane).map(|c| scale(c, app.dpi))
+    let hidden = active_tid(app, pane).and_then(|t| app.tabs.get(&t)).map_or(0, |t| t.hidden_columns);
+    crate::settings::visible_columns(pane_columns(app, pane), hidden).map(|c| scale(c, app.dpi))
 }
 
 impl Metrics {
@@ -648,6 +651,11 @@ unsafe extern "system" fn grid_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         }
         WM_CONTEXTMENU => {
             let keyboard = x == -1 && y == -1;
+            let columns = with_app(|app| std::mem::take(&mut app.grid_ui.ctx_columns)).unwrap_or(false);
+            if columns && !keyboard {
+                column_menu(hwnd, pane, POINT { x, y });
+                return LRESULT(0);
+            }
             let prep = with_app(|app| prepare_menu(app, pane, hwnd, keyboard, POINT { x, y })).flatten();
             if let Some(prep) = prep {
                 let res = shell::show_context_menu(hwnd, &prep.shell_paths, prep.pt, shift(), &prep.items);
@@ -951,7 +959,7 @@ pub fn hit(app: &mut App, pane: PaneId, x: i32, y: i32) -> Hit {
         let mut edge = -t.scroll_x;
         for (c, w) in cols.iter().enumerate() {
             edge += w;
-            if (x - edge).abs() <= slop {
+            if *w > 0 && (x - edge).abs() <= slop {
                 return Hit::Divider(c);
             }
         }
@@ -1054,6 +1062,9 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
     let sort_col = t.tree.sort.column();
     for (c, title) in TITLES.iter().enumerate() {
         let cw = cols[c];
+        if cw == 0 {
+            continue;
+        }
         let right = c == 3;
         let flags = if right { DT_RIGHT_V } else { DT_LEFT_V };
         let sorted = c == sort_col;
@@ -1170,17 +1181,20 @@ fn draw(app: &mut App, pane: PaneId, hwnd: HWND, hdc: HDC, r: &RECT) {
             let _ = RestoreDC(hdc, -1);
         }
 
-        // Other columns.
+        // Other columns, in Explorer's secondary grey.
+        let detail = if dim { pal.text_faint } else { pal.text_dim };
         let mut cx = -sx + cols[0];
-        if n.kind != Kind::Drive {
-            draw_text(hdc, &format_time(n.modified), &rc(cx + m.pad, y, cols[1] - 2 * m.pad, m.row), color, DT_LEFT_V);
+        if cols[1] > 0 && n.kind != Kind::Drive {
+            draw_text(hdc, &format_time(n.modified), &rc(cx + m.pad, y, cols[1] - 2 * m.pad, m.row), detail, DT_LEFT_V);
         }
         cx += cols[1];
-        draw_text(hdc, &n.type_name, &rc(cx + m.pad, y, cols[2] - 2 * m.pad, m.row), color, DT_LEFT_V);
+        if cols[2] > 0 {
+            draw_text(hdc, &n.type_name, &rc(cx + m.pad, y, cols[2] - 2 * m.pad, m.row), detail, DT_LEFT_V);
+        }
         cx += cols[2];
-        let size = size_text(n);
+        let size = if cols[3] > 0 { size_text(n) } else { String::new() };
         if !size.is_empty() {
-            draw_text(hdc, &size, &rc(cx + m.pad, y, cols[3] - 2 * m.pad, m.row), color, DT_RIGHT_V);
+            draw_text(hdc, &size, &rc(cx + m.pad, y, cols[3] - 2 * m.pad, m.row), detail, DT_RIGHT_V);
         }
     }
     draw_crumb_bar(hdc, &bar, &pal);
@@ -1877,7 +1891,9 @@ fn go_up(app: &mut App, tid: TabId) {
 fn on_rbutton(app: &mut App, pane: PaneId, x: i32, y: i32) {
     app.activate_pane(pane);
     let Some(tid) = active_tid(app, pane) else { return };
-    app.grid_ui.ctx_background = match hit(app, pane, x, y) {
+    let h = hit(app, pane, x, y);
+    app.grid_ui.ctx_columns = matches!(h, Hit::Header(_) | Hit::Divider(_));
+    app.grid_ui.ctx_background = match h {
         Hit::Row { node, .. } => {
             if let Some(t) = app.tabs.get_mut(&tid) {
                 if t.tree.is_selected(node) {
@@ -1900,6 +1916,30 @@ fn on_rbutton(app: &mut App, pane: PaneId, x: i32, y: i32) {
 }
 
 // ---------- Context menu ----------
+
+/// Header menu with a checked item per hideable column; toggles the chosen one.
+fn column_menu(hwnd: HWND, pane: PaneId, pt: POINT) {
+    let Some((tid, hidden)) = with_app(|app| active_tid(app, pane).and_then(|t| app.tabs.get(&t)).map(|t| (t.id, t.hidden_columns))).flatten() else {
+        return;
+    };
+    let cmd = unsafe {
+        let Ok(m) = CreatePopupMenu() else { return };
+        append_menu(m, 1, TITLES[0], false);
+        let _ = CheckMenuItem(m, 1, (MF_BYCOMMAND | MF_CHECKED).0);
+        for (c, title) in TITLES.iter().enumerate().skip(1) {
+            append_menu(m, c + 1, title, true);
+            if hidden & (1 << c) == 0 {
+                let _ = CheckMenuItem(m, (c + 1) as u32, (MF_BYCOMMAND | MF_CHECKED).0);
+            }
+        }
+        let cmd = track_menu(m, hwnd, pt, TRACK_POPUP_MENU_FLAGS(0));
+        let _ = DestroyMenu(m);
+        cmd
+    };
+    if cmd >= 2 {
+        with_app(|app| app.toggle_column(tid, cmd as usize - 1));
+    }
+}
 
 struct MenuPrep {
     tid: TabId,

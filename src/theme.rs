@@ -19,6 +19,8 @@ pub struct Palette {
     pub text_dim: COLORREF,
     /// Secondary text that must stay readable (inactive tab titles).
     pub text_soft: COLORREF,
+    /// Detail columns of hidden/cut rows: a step fainter than `text_dim`.
+    pub text_faint: COLORREF,
     pub sel: COLORREF,
     pub sel_inactive: COLORREF,
     pub hover: COLORREF,
@@ -26,9 +28,14 @@ pub struct Palette {
     pub border: COLORREF,
     pub edit_bg: COLORREF,
     pub error: COLORREF,
-    /// Fill of inactive tabs, so they read as tabs against the strip.
-    pub tab_inactive: COLORREF,
+    /// Tab strips and the gutters between panes: darker than the active tab, as in Explorer.
+    pub strip: COLORREF,
+    /// Hovered inactive tab and "+" on the strip.
+    pub strip_hover: COLORREF,
     pub tab_hover: COLORREF,
+    /// Minimize/maximize caption buttons, hovered and pressed.
+    pub caption_hover: COLORREF,
+    pub caption_pressed: COLORREF,
 }
 
 impl Palette {
@@ -40,6 +47,7 @@ impl Palette {
                 text: rgb(0xF2F2F2),
                 text_dim: rgb(0x9A9A9A),
                 text_soft: rgb(0xD0D0D0),
+                text_faint: rgb(0x6A6A6A),
                 sel: rgb(0x264F78),
                 sel_inactive: rgb(0x3A3A3A),
                 hover: rgb(0x2D2D2D),
@@ -47,8 +55,11 @@ impl Palette {
                 border: rgb(0x3A3A3A),
                 edit_bg: rgb(0x2B2B2B),
                 error: rgb(0xFF99A4),
-                tab_inactive: rgb(0x2A2A2A),
+                strip: rgb(0x111111),
+                strip_hover: rgb(0x1A1A1A),
                 tab_hover: rgb(0x343434),
+                caption_hover: rgb(0x2D2D2D),
+                caption_pressed: rgb(0x292929),
             }
         } else {
             Palette {
@@ -57,6 +68,7 @@ impl Palette {
                 text: rgb(0x1A1A1A),
                 text_dim: rgb(0x6E6E6E),
                 text_soft: rgb(0x3C3C3C),
+                text_faint: rgb(0xABABAB),
                 sel: rgb(0xCCE8FF),
                 sel_inactive: rgb(0xD9D9D9),
                 hover: rgb(0xE5F3FF),
@@ -64,8 +76,11 @@ impl Palette {
                 border: rgb(0xD5D5D5),
                 edit_bg: rgb(0xFFFFFF),
                 error: rgb(0xC42B1C),
-                tab_inactive: rgb(0xE6E6E6),
+                strip: rgb(0xE6E6E6),
+                strip_hover: rgb(0xEEEEEE),
                 tab_hover: rgb(0xDADADA),
+                caption_hover: rgb(0xCECECE),
+                caption_pressed: rgb(0xD4D4D4),
             }
         }
     }
@@ -190,6 +205,9 @@ pub mod glyph {
     pub const NEW_FILE: &str = "\u{E8A5}";
     pub const UNDO: &str = "\u{E7A7}";
     pub const OPEN: &str = "\u{E8A7}";
+    pub const MINIMIZE: &str = "\u{E921}";
+    pub const MAXIMIZE: &str = "\u{E922}";
+    pub const RESTORE: &str = "\u{E923}";
 }
 
 /// Reads the "apps use light theme" preference.

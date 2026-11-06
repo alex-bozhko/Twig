@@ -119,6 +119,78 @@ pub fn clean_path_input(text: &str) -> String {
     text.trim().trim_matches('"').trim().to_string()
 }
 
+/// Paths that clipboard text may mean, most likely first. Tolerates surrounding whitespace and
+/// quotes, line breaks (a path wrapped across lines, or one path per line), `file:` URLs, and
+/// doubled or forward separators (`C:\\a\\b`, `C://a//b`).
+pub fn clipboard_path_candidates(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).take(50).collect();
+    let mut raw = Vec::new();
+    if lines.len() > 1 {
+        raw.push(lines.concat());
+    }
+    raw.extend(lines.iter().map(|l| l.to_string()));
+    let mut out: Vec<String> = Vec::new();
+    for r in raw {
+        let p = sanitize_path_text(&r);
+        if !p.is_empty() && p.len() < 32_768 && !p.contains(['<', '>', '|', '"', '*']) && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn sanitize_path_text(text: &str) -> String {
+    let mut t = text.trim().trim_matches('"').trim();
+    if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
+        t = t[1..t.len() - 1].trim();
+    }
+    let decoded;
+    if t.len() > 5 && t[..5].eq_ignore_ascii_case("file:") {
+        decoded = percent_decode(&t[5..]);
+        // file:///C:/x is local; file://server/share is UNC.
+        t = decoded.strip_prefix("///").unwrap_or(&decoded);
+    }
+    let t = t.replace('/', "\\");
+    let body = t.trim_start_matches('\\');
+    let lead = match t.len() - body.len() {
+        0 => "",
+        1 => "\\",
+        _ => "\\\\",
+    };
+    let mut out = String::from(lead);
+    for c in body.chars() {
+        if c == '\\' && out.ends_with('\\') {
+            continue;
+        }
+        if !c.is_control() {
+            out.push(c);
+        }
+    }
+    normalize_path(&out)
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = (b[i] == b'%' && i + 2 < b.len())
+            .then(|| std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()))
+            .flatten();
+        match hex {
+            Some(v) => {
+                out.push(v);
+                i += 3;
+            }
+            None => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Parent directory of a path: `\\server\share` goes up to `\\server`; `None` for drive roots and servers.
 pub fn parent_path(path: &str) -> Option<String> {
     let p = normalize_path(path);
@@ -386,6 +458,24 @@ mod tests {
         assert_eq!(join_path("C:\\a", "x"), "C:\\a\\x");
         assert_eq!(clean_path_input("  \"C:\\a b\\\"\r\n"), "C:\\a b\\");
         assert_eq!(clean_path_input(" \" \" "), "");
+    }
+
+    #[test]
+    fn clipboard_paths() {
+        let c = clipboard_path_candidates;
+        assert_eq!(c("  \"C:\\a b\\\"  \r\n"), ["C:\\a b"]);
+        assert_eq!(c("'C:\\a'"), ["C:\\a"]);
+        assert_eq!(c("C:\\\\Users\\\\bob\\\\"), ["C:\\Users\\bob"]);
+        assert_eq!(c("C://Users//bob"), ["C:\\Users\\bob"]);
+        assert_eq!(c("\\\\\\\\srv\\\\share//x"), ["\\\\srv\\share\\x"]);
+        assert_eq!(c("//srv/share"), ["\\\\srv\\share"]);
+        assert_eq!(c("file:///C:/a%20b/c"), ["C:\\a b\\c"]);
+        assert_eq!(c("file://srv/share"), ["\\\\srv\\share"]);
+        assert_eq!(c("C:\\very\\lo\r\n  ng\\path\n"), ["C:\\very\\long\\path", "C:\\very\\lo", "ng\\path"]);
+        assert_eq!(c("C:\\a\tb"), ["C:\\ab"]);
+        assert!(c(" \r\n \"\" ").is_empty());
+        assert!(c("a <b> c").is_empty());
+        assert_eq!(c("C:"), ["C:\\"]);
     }
 
     #[test]

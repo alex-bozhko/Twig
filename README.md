@@ -33,6 +33,8 @@ file operations.
   scrolled, and re-selects what was selected.
 - Click a column header to sort, drag header edges to resize. Each pane keeps
   its own column widths; new panes start with the most recently set widths.
+- Right-click a column header to show or hide Date modified, Type and Size.
+  The change applies to the current tab, and new tabs start with it too.
 - Type-to-search jumps to the next matching item in the current folder.
 - The status bar shows the active tab's item count, and the number and total
   size of selected items.
@@ -43,9 +45,16 @@ file operations.
 
 ### Tabs and panes
 
+- There is no title bar: the tab strips run to the top edge, with the
+  minimize / maximize / close buttons at the right of the top-right pane's
+  strip. Drag empty strip space to move the window, double-click it to
+  maximize or restore.
 - `Ctrl+T` new tab, `Ctrl+W` close, `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle.
-- Drag a tab onto another pane's strip to move it, or onto a pane edge to
-  dock it into a new split.
+- Right-click `+` to open the path in the clipboard in a new tab (quotes,
+  stray spaces, line breaks, `file:` URLs and doubled `\\` or `//`
+  separators are cleaned up; a file opens its folder with it selected).
+- Drag a tab onto a pane's strip to move it, or anywhere over a pane to
+  dock it into a new split on the nearest side.
 - Tab context menu: Close, Close Others, Close to the Left / Right,
   Split Right, Split Down.
 

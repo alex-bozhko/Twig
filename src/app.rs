@@ -93,6 +93,8 @@ pub struct Tab {
     pub scan: Option<ScanState>,
     /// A path is being typed into the breadcrumb bar.
     pub editing_path: bool,
+    /// Hidden columns (bits 1 << column).
+    pub hidden_columns: u8,
     /// Navigation history: earlier views (most recent last) and views gone back from.
     back: Vec<HistEntry>,
     fwd: Vec<HistEntry>,
@@ -161,6 +163,7 @@ impl Tab {
             deep: false,
             scan: None,
             editing_path: false,
+            hidden_columns: 0,
             back: Vec::new(),
             fwd: Vec::new(),
             dirty: true,
@@ -354,6 +357,7 @@ impl Tab {
             scroll: self.top as i32,
             sort: self.tree.sort,
             desc: self.tree.desc,
+            hidden_columns: Some(self.hidden_columns),
         }
     }
 }
@@ -500,6 +504,8 @@ impl App {
         let id = self.next_tab;
         self.next_tab += 1;
         self.tabs.insert(id, Tab::new(id, e.sort, e.desc));
+        let hidden = e.hidden_columns.unwrap_or(self.settings.hidden_columns) & crate::settings::HIDEABLE_COLUMNS;
+        self.tabs.get_mut(&id).unwrap().hidden_columns = hidden;
         if let Some(p) = self.panes.get_mut(&pane) {
             p.tabs.push(id);
         }
@@ -550,6 +556,20 @@ impl App {
             t.back.clear();
         }
         self.external_tab = Some(tid);
+    }
+
+    /// Opens the first existing path among the clipboard text's candidates in a new tab.
+    pub fn open_clipboard_path(&mut self, text: &str) {
+        let candidates = clipboard_path_candidates(text);
+        let found = candidates.iter().find(|c| loader::entry_for_path(&normalize_path(&expand_env(c))).is_some());
+        match (found, candidates.first()) {
+            (Some(p), _) => self.open_external(p),
+            (None, Some(p)) => {
+                let shown: String = p.chars().take(120).collect();
+                self.set_status_error(format!("Not found: {shown}"));
+            }
+            (None, None) => self.set_status_error("Clipboard has no path".into()),
+        }
     }
 
     /// Selects `text` in the tab the last external request opened on its folder ("Show in
@@ -706,6 +726,22 @@ impl App {
         self.inherit_columns(new, src);
         self.layout.split(target, new, side);
         self.move_tab(tab, new, 0);
+    }
+
+    /// Shows or hides `column` in `tab`; new tabs follow the latest choice.
+    pub fn toggle_column(&mut self, tab: TabId, column: usize) {
+        let bit = 1u8 << column;
+        if bit & crate::settings::HIDEABLE_COLUMNS == 0 {
+            return;
+        }
+        let Some(t) = self.tabs.get_mut(&tab) else { return };
+        t.hidden_columns ^= bit;
+        let hidden = t.hidden_columns & bit;
+        self.settings.hidden_columns = (self.settings.hidden_columns & !bit) | hidden;
+        if let Some(p) = self.pane_of_tab(tab) {
+            crate::grid::sync(self, p);
+        }
+        self.save_settings();
     }
 
     fn inherit_columns(&mut self, pane: PaneId, from: PaneId) {

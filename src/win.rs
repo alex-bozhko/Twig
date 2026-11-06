@@ -185,6 +185,103 @@ pub fn fill(hdc: HDC, r: &RECT, color: COLORREF) {
     }
 }
 
+/// Blends `a` toward `b` by `t` (0 = a, 1 = b).
+pub fn mix(a: COLORREF, b: COLORREF, t: f32) -> COLORREF {
+    let ch = |s: u32| {
+        let (x, y) = (((a.0 >> s) & 0xFF) as f32, ((b.0 >> s) & 0xFF) as f32);
+        ((x + (y - x) * t).round() as u32) << s
+    };
+    COLORREF(ch(0) | ch(8) | ch(16))
+}
+
+/// Anti-aliases the `rad`×`rad` square at (x0, y0) against a circle centered at (cx, cy):
+/// pixels inside the circle get `inner`, outside `outer`, edges a 4×4-supersampled blend.
+fn arc_square(hdc: HDC, x0: i32, y0: i32, cx: i32, cy: i32, rad: i32, inner: COLORREF, outer: COLORREF) {
+    for y in y0..y0 + rad {
+        for x in x0..x0 + rad {
+            unsafe {
+                SetPixel(hdc, x, y, mix(outer, inner, coverage(x - cx, y - cy, rad) as f32 / 16.0));
+            }
+        }
+    }
+}
+
+/// How many of pixel (dx, dy)'s 4×4 subsamples (0..=16) fall within `rad` of the origin.
+fn coverage(dx: i32, dy: i32, rad: i32) -> i32 {
+    let r2 = (rad * rad) as f32;
+    let mut hits = 0;
+    for sy in 0..4 {
+        for sx in 0..4 {
+            let x = dx as f32 + (sx as f32 + 0.5) / 4.0;
+            let y = dy as f32 + (sy as f32 + 0.5) / 4.0;
+            hits += (x * x + y * y <= r2) as i32;
+        }
+    }
+    hits
+}
+
+/// A `w`×`h` window region with corners rounded to `rad`, keeping only fully covered pixels;
+/// the parent paints the anti-aliased fringe with `fill_corners`.
+pub fn round_region(w: i32, h: i32, rad: i32) -> HRGN {
+    let rad = rad.min(w / 2).min(h / 2).max(0);
+    unsafe {
+        let rgn = CreateRectRgn(0, 0, w, h);
+        for y in 0..rad {
+            // Pixels left of `cut` in this row of the top-left corner are (partly) outside the arc.
+            let cut = (0..rad).find(|&x| coverage(x - rad, y - rad, rad) == 16).unwrap_or(rad);
+            for (x0, y0) in [(0, y), (w - cut, y), (0, h - 1 - y), (w - cut, h - 1 - y)] {
+                if cut > 0 {
+                    let r = CreateRectRgn(x0, y0, x0 + cut, y0 + 1);
+                    CombineRgn(rgn, rgn, r, RGN_DIFF);
+                    let _ = DeleteObject(r);
+                }
+            }
+        }
+        rgn
+    }
+}
+
+/// Paints the anti-aliased corners of a child window clipped by `round_region`: `inner` (the
+/// child's edge color) blended over `back`. Pixels the child covers are clipped away.
+pub fn fill_corners(hdc: HDC, r: &RECT, rad: i32, inner: COLORREF, back: COLORREF) {
+    let rad = rad.min((r.right - r.left) / 2).min((r.bottom - r.top) / 2);
+    if rad <= 0 {
+        return;
+    }
+    let (l, t, rr, b) = (r.left, r.top, r.right, r.bottom);
+    arc_square(hdc, l, t, l + rad, t + rad, rad, inner, back);
+    arc_square(hdc, rr - rad, t, rr - rad, t + rad, rad, inner, back);
+    arc_square(hdc, l, b - rad, l + rad, b - rad, rad, inner, back);
+    arc_square(hdc, rr - rad, b - rad, rr - rad, b - rad, rad, inner, back);
+}
+
+/// Fills `r` with anti-aliased rounded top corners (and bottom ones if `bottom`), over a solid `back`.
+pub fn fill_round(hdc: HDC, r: &RECT, rad: i32, color: COLORREF, back: COLORREF, bottom: bool) {
+    fill(hdc, r, color);
+    let rad = rad.min((r.right - r.left) / 2).min((r.bottom - r.top) / if bottom { 2 } else { 1 });
+    if rad <= 0 {
+        return;
+    }
+    let (l, t, rr, b) = (r.left, r.top, r.right, r.bottom);
+    arc_square(hdc, l, t, l + rad, t + rad, rad, color, back);
+    arc_square(hdc, rr - rad, t, rr - rad, t + rad, rad, color, back);
+    if bottom {
+        arc_square(hdc, l, b - rad, l + rad, b - rad, rad, color, back);
+        arc_square(hdc, rr - rad, b - rad, rr - rad, b - rad, rad, color, back);
+    }
+}
+
+/// Explorer's tab foot: concave fillets of radius `rad` just outside the bottom corners of `r`,
+/// so a tab of `color` flows into the same-colored surface below it.
+pub fn fill_fillets(hdc: HDC, r: &RECT, rad: i32, color: COLORREF, back: COLORREF) {
+    if rad <= 0 {
+        return;
+    }
+    let b = r.bottom;
+    arc_square(hdc, r.left - rad, b - rad, r.left - rad, b - rad, rad, back, color);
+    arc_square(hdc, r.right, b - rad, r.right + rad, b - rad, rad, back, color);
+}
+
 pub fn frame(hdc: HDC, r: &RECT, color: COLORREF, width: i32) {
     let w = width.max(1);
     fill(hdc, &RECT { left: r.left, top: r.top, right: r.right, bottom: r.top + w }, color);

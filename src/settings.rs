@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 pub const DEFAULT_COLUMNS: [i32; 4] = [320, 170, 140, 110];
 pub const MIN_COLUMN: i32 = 50;
+/// Bits (1 << column) of the columns that can be hidden: Date modified, Type, Size.
+pub const HIDEABLE_COLUMNS: u8 = 0b1110;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Favorite {
@@ -26,6 +28,9 @@ pub struct TabEntry {
     pub scroll: i32,
     pub sort: SortKey,
     pub desc: bool,
+    /// Hidden columns (bits 1 << column); None = `Settings::hidden_columns`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden_columns: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -59,18 +64,26 @@ pub struct Settings {
     pub window: Option<WindowPos>,
     /// Column widths in 96-DPI pixels: Name, Modified, Type, Size.
     pub columns: [i32; 4],
+    /// Columns hidden in new tabs (bits 1 << column).
+    pub hidden_columns: u8,
     pub favorites: Vec<Favorite>,
     pub layout: Option<LayoutEntry>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, columns: DEFAULT_COLUMNS, favorites: Vec::new(), layout: None }
+        Settings { window: None, columns: DEFAULT_COLUMNS, hidden_columns: 0, favorites: Vec::new(), layout: None }
     }
 }
 
 pub fn clamp_columns(c: [i32; 4]) -> [i32; 4] {
     c.map(|w| w.clamp(MIN_COLUMN, 4000))
+}
+
+/// Column widths with hidden columns (bits 1 << column) zeroed; Name always shows.
+pub fn visible_columns(widths: [i32; 4], hidden: u8) -> [i32; 4] {
+    let hidden = hidden & HIDEABLE_COLUMNS;
+    std::array::from_fn(|c| if hidden & (1 << c) != 0 { 0 } else { widths[c] })
 }
 
 fn local_app_data() -> Option<PathBuf> {
@@ -99,6 +112,7 @@ impl Settings {
 
     fn sanitized(mut self) -> Settings {
         self.columns = clamp_columns(self.columns);
+        self.hidden_columns &= HIDEABLE_COLUMNS;
         self
     }
 
@@ -168,6 +182,7 @@ fn legacy_tab(v: &serde_json::Value) -> Option<TabEntry> {
         scroll: 0,
         sort: str_field(v, "SortKey").map(SortKey::parse_loose).unwrap_or_default(),
         desc: flag("SortDescending"),
+        hidden_columns: None,
     })
 }
 
@@ -212,6 +227,7 @@ mod tests {
         let s = Settings {
             window: Some(WindowPos { x: 1, y: 2, w: 3, h: 4, maximized: true }),
             columns: [100, 200, 300, 400],
+            hidden_columns: 0b0100,
             favorites: vec![Favorite { path: "C:\\x".into(), sort: SortKey::Size, desc: true }],
             layout: Some(LayoutEntry::Split {
                 horizontal: true,
@@ -219,7 +235,7 @@ mod tests {
                 children: vec![
                     LayoutEntry::Leaf { tabs: vec![TabEntry::default()], active: 0, is_active: true, columns: None },
                     LayoutEntry::Leaf {
-                        tabs: vec![TabEntry { root: Some("C:\\".into()), expanded: vec!["C:\\a".into()], selected: None, scroll: 5, sort: SortKey::Type, desc: false }],
+                        tabs: vec![TabEntry { root: Some("C:\\".into()), expanded: vec!["C:\\a".into()], selected: None, scroll: 5, sort: SortKey::Type, desc: false, hidden_columns: Some(0b1010) }],
                         active: 0,
                         is_active: false,
                         columns: Some([90, 80, 70, 60]),
@@ -231,6 +247,17 @@ mod tests {
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), s);
         // Missing fields fall back to defaults.
         assert_eq!(serde_json::from_str::<Settings>("{}").unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn hidden_columns() {
+        let w = [100, 200, 300, 400];
+        assert_eq!(visible_columns(w, 0), w);
+        assert_eq!(visible_columns(w, 0b1010), [100, 0, 300, 0]);
+        // Name can't be hidden.
+        assert_eq!(visible_columns(w, 0xFF), [100, 0, 0, 0]);
+        let s: Settings = serde_json::from_str(r#"{"hidden_columns":255}"#).unwrap();
+        assert_eq!(s.sanitized().hidden_columns, HIDEABLE_COLUMNS);
     }
 
     #[test]
@@ -256,7 +283,7 @@ mod tests {
         assert_eq!(weights, vec![2.0, 1.0]);
         let LayoutEntry::Leaf { tabs, active, is_active, .. } = &children[0] else { panic!() };
         assert_eq!((*active, *is_active), (1, true));
-        assert_eq!(tabs[0], TabEntry { root: Some("C:\\a".into()), expanded: vec!["C:\\a".into()], selected: Some("C:\\a\\b".into()), scroll: 0, sort: SortKey::Size, desc: true });
+        assert_eq!(tabs[0], TabEntry { root: Some("C:\\a".into()), expanded: vec!["C:\\a".into()], selected: Some("C:\\a\\b".into()), scroll: 0, sort: SortKey::Size, desc: true, hidden_columns: None });
         assert_eq!((tabs[1].root.as_deref(), tabs[1].selected.as_deref()), (None, Some("C:\\x\\f.txt")));
         let LayoutEntry::Leaf { tabs, .. } = &children[1] else { panic!() };
         assert_eq!(tabs[0].root, None);

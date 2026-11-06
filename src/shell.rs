@@ -333,6 +333,29 @@ pub fn clipboard_has_files() -> bool {
     unsafe { IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_ok() }
 }
 
+pub fn clipboard_has_text() -> bool {
+    unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok() }
+}
+
+pub fn clipboard_text(hwnd: HWND) -> Option<String> {
+    unsafe {
+        OpenClipboard(hwnd).ok()?;
+        let mut text = None;
+        if let Ok(h) = GetClipboardData(CF_UNICODETEXT.0 as u32) {
+            let g = HGLOBAL(h.0);
+            let p = GlobalLock(g) as *const u16;
+            if !p.is_null() {
+                let max = GlobalSize(g) / 2;
+                let len = (0..max).find(|&i| *p.add(i) == 0).unwrap_or(max);
+                text = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, len)));
+                let _ = GlobalUnlock(g);
+            }
+        }
+        let _ = CloseClipboard();
+        text
+    }
+}
+
 pub fn clipboard_set_text(hwnd: HWND, text: &str) {
     let w = wide(text);
     unsafe {
