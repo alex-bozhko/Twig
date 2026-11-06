@@ -200,7 +200,8 @@ pub fn relayout(app: &mut App) {
         unsafe {
             let g = p.grid();
             let (gw, gh) = (grid.right - grid.left, grid.bottom - grid.top);
-            let _ = MoveWindow(g, grid.left, grid.top, gw, gh, true);
+            // The grid repaints fully anyway; copied bits would only smear stale content.
+            let _ = SetWindowPos(g, HWND::default(), grid.left, grid.top, gw, gh, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
             SetWindowRgn(g, round_region(gw, gh, scale(CARD_RADIUS, d)), true);
             let _ = ShowWindow(g, SW_SHOWNA);
         }
@@ -672,13 +673,22 @@ fn on_button_down(hwnd: HWND, x: i32, y: i32) {
 }
 
 fn on_mouse_move(hwnd: HWND, x: i32, y: i32) {
-    with_app(|app| {
-        if let Some((s, grab)) = app.chrome.split_drag.clone() {
-            let pos = if s.horizontal { x - grab } else { y - grab };
-            app.layout.drag_splitter(&s, pos, scale(MIN_PANE, app.dpi));
-            relayout(app);
-            return;
+    let dragged = with_app(|app| {
+        let (s, grab) = app.chrome.split_drag.clone()?;
+        let pos = if s.horizontal { x - grab } else { y - grab };
+        app.layout.drag_splitter(&s, pos, scale(MIN_PANE, app.dpi));
+        relayout(app);
+        Some(())
+    });
+    if dragged.flatten().is_some() {
+        // Mouse moves outpace relayout, so queued WM_PAINTs would starve until the drag
+        // pauses, leaving stale pixels behind. Paint the whole tree now (outside the borrow).
+        unsafe {
+            let _ = RedrawWindow(hwnd, None, None, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
         }
+        return;
+    }
+    with_app(|app| {
         if let Some(td) = &app.chrome.tab_drag {
             let (tab, start, mut active, old) = (td.tab, td.start, td.active, td.spot);
             if !active {
