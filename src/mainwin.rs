@@ -85,6 +85,8 @@ impl Hot {
 struct TabRect {
     rect: RECT,
     close: RECT,
+    /// The close button on a hovered inactive tab, centered in its inset hover body.
+    close_idle: RECT,
 }
 
 struct PaneChrome {
@@ -254,7 +256,8 @@ fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, reserve: i32, titles
         let inset = (h - close) / 2;
         let cx = rect.right - inset - close;
         let cy = top + inset;
-        tabs.push(TabRect { rect, close: rc(cx, cy, close, close) });
+        // The hover body is inset `gap` less at the sides than above and below.
+        tabs.push(TabRect { rect, close: rc(cx, cy, close, close), close_idle: rc(cx + gap, cy, close, close) });
         x += w + gap;
     }
     let ph = scale(28, d).min(h);
@@ -290,7 +293,7 @@ fn hit(c: &Chrome, x: i32, y: i32) -> Option<Hot> {
             continue;
         }
         for (i, t) in pc.tabs.iter().enumerate() {
-            if pt_in(&t.close, x, y) {
+            if pt_in(&t.close, x, y) || pt_in(&t.close_idle, x, y) {
                 return Some(Hot::TabClose(pc.pane, i));
             }
             if pt_in(&t.rect, x, y) {
@@ -425,6 +428,7 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
             let Some(tab) = p.tabs.get(i).and_then(|t| app.tabs.get(t)) else { continue };
             let active = i == p.active;
             let hovered = hovered(i);
+            let close_r = if active { &tr.close } else { &tr.close_idle };
             let mut text_r = RECT { left: tr.rect.left + scale(10, d), right: tr.close.left - scale(2, d), ..tr.rect };
             let badges = [(tab.zoomed(), glyph::ZOOM), (!tab.filter.is_empty(), glyph::FILTER)];
             for (_, g) in badges.into_iter().filter(|b| b.0) {
@@ -442,12 +446,12 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
             if active || hovered {
                 if c.hot == Some(Hot::TabClose(pc.pane, i)) {
                     let under = if active { pal.toolbar } else { pal.strip_hover };
-                    fill_round(hdc, &tr.close, scale(4, d), pal.tab_hover, under, true);
+                    fill_round(hdc, close_r, scale(4, d), pal.tab_hover, under, true);
                 }
                 unsafe {
                     SelectObject(hdc, app.fonts.glyph_tab);
                 }
-                draw_glyph(hdc, glyph::CLOSE, &tr.close, pal.text_dim);
+                draw_glyph(hdc, glyph::CLOSE, close_r, pal.text_dim);
             }
         }
         if c.hot == Some(Hot::Plus(pc.pane)) {
