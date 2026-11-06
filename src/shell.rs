@@ -403,15 +403,12 @@ pub fn open(hwnd: HWND, path: &str) -> Result<(), String> {
     shell_execute(hwnd, None, path, None, dir.as_deref())
 }
 
-/// Opens Explorer at a folder, or at a file's folder with the file selected.
+/// Opens Explorer at a folder, or at a file's folder with the file selected. Launches
+/// explorer.exe directly: SHOpenFolderAndSelectItems would route to the default folder
+/// handler, which may be Twig itself.
 pub fn open_in_explorer(hwnd: HWND, path: &str, is_dir: bool) {
-    if is_dir {
-        let _ = shell_execute(hwnd, None, "explorer.exe", Some(&format!("\"{path}\"")), None);
-    } else if let Some(p) = pidl(path) {
-        unsafe {
-            let _ = SHOpenFolderAndSelectItems(p.0, None, 0);
-        }
-    }
+    let args = if is_dir { format!("\"{path}\"") } else { format!("/select,\"{path}\"") };
+    let _ = shell_execute(hwnd, None, "explorer.exe", Some(&args), None);
 }
 
 pub fn properties(hwnd: HWND, path: &str) {
