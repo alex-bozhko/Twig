@@ -261,8 +261,9 @@ fn layout_tabs(hdc: HDC, font: HFONT, d: u32, strip: &RECT, reserve: i32, titles
         tabs.push(TabRect { rect, close: rc(cx, cy, close, close), close_idle: rc(cx + gap, cy, close, close) });
         x += w + gap;
     }
-    let ph = scale(28, d).min(h);
-    let plus = rc(x + scale(2, d), top + (h - ph) / 2, plus_w, ph);
+    // Sits like a hovered tab body in the next slot: same insets above, below and beside.
+    let m = scale(3, d);
+    let plus = rc(x + m - gap, top + m, plus_w, (h - 2 * m).max(0));
     (tabs, plus)
 }
 
