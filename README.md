@@ -8,6 +8,8 @@ Twig shows your file system as a real collapsible tree with columns (Name /
 Date modified / Type / Size), multiple tabs, split panes and Explorer-grade
 file operations.
 
+![Twig with three panes: This PC, a DVD drive, and a project folder tree](docs/screenshot.png)
+
 ## Features
 
 ### Tree
