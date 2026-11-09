@@ -494,8 +494,8 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     }
 
     // Status bar
-    fill(hdc, &c.status, pal.toolbar);
-    fill(hdc, &rc(0, c.status.top, client.right, 1), pal.border);
+    // Part of the backdrop the pane cards sit on, like Explorer's status bar.
+    fill(hdc, &c.status, pal.strip);
     let sr = RECT { left: c.status.left + scale(10, d), right: c.status.right - scale(10, d), ..c.status };
     unsafe {
         SelectObject(hdc, app.fonts.ui);
@@ -515,7 +515,7 @@ fn paint(app: &App, hdc: HDC, client: &RECT) {
     }
     for (h, r, g) in [(Hot::Gear, &c.gear, glyph::GEAR), (Hot::Log, &c.log, glyph::HISTORY), (Hot::Help, &c.help, glyph::HELP)] {
         if c.hot == Some(h) {
-            fill(hdc, r, if c.pressed == Some(h) { pal.sel_inactive } else { pal.hover });
+            fill(hdc, r, if c.pressed == Some(h) { pal.sel_inactive } else { pal.tab_hover });
         }
         draw_text(hdc, g, r, if c.hot == Some(h) { pal.text } else { pal.text_dim }, DT_CENTER_V);
     }
